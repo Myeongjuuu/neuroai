@@ -47,6 +47,8 @@ def run_benchmark(
     prepare: bool = False,
     download: bool = False,
     plot_cached: bool = False,
+    seed: int | list[int] | None = None,
+    wandb_paper_summary: bool = False,
 ) -> list[dict[str, tp.Any]]:
     """Run one or more NeuralBench experiments from Python.
 
@@ -88,6 +90,12 @@ def run_benchmark(
     plot_cached : bool
         Generate plots and tables from cached results only, without
         running any new experiments.
+    seed : int or list of int or None
+        Optional seed override for running one or a few seeds from the default
+        experiment grid, useful for long local full-training runs.
+    wandb_paper_summary : bool
+        Upload one quiet W&B summary run containing mean/std test metrics
+        across the selected seeds.
 
     Returns
     -------
@@ -142,6 +150,7 @@ def run_benchmark(
         # ConfDicts, which the pydantic model coerces into Experiment instances.
         experiments=configs,  # type: ignore[arg-type]
         debug=debug,
+        wandb_paper_summary=wandb_paper_summary,
     )
 
     if not plot_cached:
@@ -250,6 +259,24 @@ def run_benchmark_cli() -> None:
         help="Plot from cached results only, without running any experiments.",
     )
     parser.add_argument(
+        "--seed",
+        type=int,
+        nargs="+",
+        default=None,
+        help=(
+            "Override the seed grid. Use one value to run a single seed "
+            "(e.g. --seed 33), or multiple values to run a smaller seed list."
+        ),
+    )
+    parser.add_argument(
+        "--wandb-paper-summary",
+        action="store_true",
+        help=(
+            "After all selected seeds finish, upload a quiet W&B summary run "
+            "with mean/std test metrics for manuscript tables."
+        ),
+    )
+    parser.add_argument(
         "--dataset",
         type=str,
         default=None,
@@ -278,6 +305,8 @@ def run_benchmark_cli() -> None:
             prepare=args.prepare,
             download=args.download,
             plot_cached=args.plot_cached,
+            seed=args.seed,
+            wandb_paper_summary=args.wandb_paper_summary,
         )
     except Exception:
         if not args.pdb:

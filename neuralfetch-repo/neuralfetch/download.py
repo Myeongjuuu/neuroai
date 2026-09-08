@@ -11,6 +11,7 @@ import os
 import shutil
 import subprocess
 import tempfile
+import time
 import typing as tp
 import urllib.request
 import zipfile
@@ -1303,13 +1304,30 @@ class Osf(BaseDownload):
 
                 file_ = self._dl_dir / path
 
-                if file_.exists() and not overwrite:
+                if file_.exists() and not overwrite and file_.stat().st_size > 0:
                     continue
 
                 pbar.set_description(file_.name)
                 file_.parent.mkdir(parents=True, exist_ok=True)
-                with file_.open("wb") as fb:
-                    source.write_to(fb)
+                tmp_file = file_.with_name(f"{file_.name}.part")
+                if tmp_file.exists():
+                    tmp_file.unlink()
+                last_error: Exception | None = None
+                for attempt in range(3):
+                    try:
+                        with tmp_file.open("wb") as fb:
+                            source.write_to(fb)
+                        tmp_file.replace(file_)
+                        last_error = None
+                        break
+                    except Exception as exc:
+                        last_error = exc
+                        if tmp_file.exists():
+                            tmp_file.unlink()
+                        if attempt < 2:
+                            time.sleep(5 * (attempt + 1))
+                if last_error is not None:
+                    raise last_error
 
 
 class Physionet(S3):

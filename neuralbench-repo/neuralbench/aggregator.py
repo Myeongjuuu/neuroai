@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import logging
 import typing as tp
-from collections import Counter
+from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -115,6 +115,7 @@ class BenchmarkAggregator(ns.BaseModel):
     max_workers: int = 256
     collect_max_workers: int = 32
     debug: bool = False
+    wandb_paper_summary: bool = False
 
     output_dir: str = Field(default_factory=_default_output_dir)
 
@@ -278,6 +279,117 @@ class BenchmarkAggregator(ns.BaseModel):
     def collect(self, cached_only: bool = True) -> list[dict[str, tp.Any]]:
         """Gather results, without the plots, tables and stats files :meth:`run` writes."""
         return self._collect_results(cached_only=cached_only)
+    def _log_wandb_paper_summary(self, results: list[dict[str, tp.Any]]) -> None:
+        """Upload mean/std test metrics across seeds as a quiet W&B table."""
+
+        def _is_number(value: tp.Any) -> bool:
+            return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+        metric_keys = sorted(
+            {
+                key
+                for row in results
+                for key, value in row.items()
+                if key.startswith("test/") and _is_number(value)
+            }
+        )
+        if not metric_keys:
+            return
+
+        group_keys = ["task_name", "dataset_name", "brain_model_name", "model_variant"]
+        grouped: dict[tuple[tp.Any, ...], list[dict[str, tp.Any]]] = defaultdict(list)
+        for row in results:
+            grouped[tuple(row.get(key) for key in group_keys)].append(row)
+
+        import math
+        import os
+        import statistics
+
+        summary_rows: list[dict[str, tp.Any]] = []
+        for group, rows in sorted(grouped.items(), key=lambda item: item[0]):
+            seeds = sorted(row.get("seed") for row in rows)
+            base = dict(zip(group_keys, group))
+            for metric in metric_keys:
+                values = [
+                    float(row[metric])
+                    for row in rows
+                    if _is_number(row.get(metric)) and math.isfinite(float(row[metric]))
+                ]
+                if not values:
+                    continue
+                mean = statistics.fmean(values)
+                std = statistics.stdev(values) if len(values) > 1 else 0.0
+                summary_rows.append(
+                    {
+                        **base,
+                        "metric": metric,
+                        "mean": mean,
+                        "std": std,
+                        "n_seeds": len(values),
+                        "seeds": ",".join(str(seed) for seed in seeds),
+                        "paper_value": f"{mean:.2f} +/- {std:.2f}",
+                    }
+                )
+        if not summary_rows:
+            return
+
+        wandb_config = next(
+            (
+                experiment.wandb_config
+                for experiment in self.experiments
+                if experiment.wandb_config is not None
+            ),
+            None,
+        )
+        if wandb_config is None:
+            LOGGER.info("W&B is disabled; skipping paper summary upload.")
+            return
+
+        old_silent = os.environ.get("WANDB_SILENT")
+        os.environ["WANDB_SILENT"] = "true"
+        try:
+            import wandb
+
+            if not wandb_config.offline:
+                wandb.login(host=wandb_config.host)
+            columns = [
+                *group_keys,
+                "metric",
+                "mean",
+                "std",
+                "n_seeds",
+                "seeds",
+                "paper_value",
+            ]
+            with wandb.init(
+                project=wandb_config.project,
+                entity=wandb_config.entity,
+                group="paper_summary",
+                name=self._paper_summary_run_name(results),
+                job_type="paper_summary",
+                settings=wandb.Settings(silent=True),
+            ) as run:
+                table = wandb.Table(
+                    columns=columns,
+                    data=[[row.get(column) for column in columns] for row in summary_rows],
+                )
+                run.log({"paper/summary": table})
+                for row in summary_rows:
+                    metric_name = str(row["metric"]).replace("/", "_")
+                    run.summary[f"paper/{metric_name}/mean"] = row["mean"]
+                    run.summary[f"paper/{metric_name}/std"] = row["std"]
+                    run.summary[f"paper/{metric_name}/value"] = row["paper_value"]
+                run.summary["paper/seeds"] = summary_rows[0]["seeds"]
+        finally:
+            if old_silent is None:
+                os.environ.pop("WANDB_SILENT", None)
+            else:
+                os.environ["WANDB_SILENT"] = old_silent
+
+    def _paper_summary_run_name(self, results: list[dict[str, tp.Any]]) -> str:
+        tasks = sorted({str(row.get("task_name", "unknown")) for row in results})
+        models = sorted({str(row.get("brain_model_name", "unknown")) for row in results})
+        return f"paper_summary/{'+'.join(tasks)}/{'+'.join(models)}"
 
     def run(self, cached_only: bool = False) -> list[dict[str, tp.Any]]:
         results = self._collect_results(cached_only=cached_only)
@@ -300,5 +412,12 @@ class BenchmarkAggregator(ns.BaseModel):
                 LOGGER.info("No results found. Nothing to plot.")
             return []
         self._save_computational_stats(results)
-        plot_all_results(results, self.loss_to_metric_mapping, self.output_dir)
+        if self.wandb_paper_summary:
+            self._log_wandb_paper_summary(results)
+        try:
+            plot_all_results(results, self.loss_to_metric_mapping, self.output_dir)
+        except ValueError as exc:
+            if "requires at least 2 models" not in str(exc):
+                raise
+            LOGGER.info("Skipping global model-comparison plots: %s", exc)
         return results

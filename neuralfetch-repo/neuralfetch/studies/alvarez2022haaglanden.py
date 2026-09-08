@@ -103,9 +103,29 @@ class Alvarez2022Haaglanden(study.Study):
             sub_id = f"SN{subject:03d}"
             yield dict(subject=sub_id)
 
+    def _recordings_dir(self) -> tp.Any:
+        candidates = (
+            self.path / "download" / "hmc-sleep-staging" / "1.1" / "recordings",
+            self.path / "download" / "recordings",
+        )
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+        return candidates[0]
+
+    def _recording_file(self, timeline: dict[str, tp.Any], suffix: str) -> tp.Any:
+        candidates = (
+            self.path / "download" / "hmc-sleep-staging" / "1.1" / "recordings",
+            self.path / "download" / "recordings",
+        )
+        for candidate in candidates:
+            fname = candidate / f"{timeline['subject']}{suffix}"
+            if fname.exists():
+                return fname
+        return candidates[0] / f"{timeline['subject']}{suffix}"
+
     def _load_timeline_events(self, timeline: dict[str, tp.Any]) -> pd.DataFrame:
-        sub_dir = self.path / "download" / "recordings"
-        fname_events = sub_dir / f"{timeline['subject']}_sleepscoring.edf"
+        fname_events = self._recording_file(timeline, "_sleepscoring.edf")
         annots_df = mne.read_annotations(fname_events).to_data_frame(time_format=None)
         annots_df.rename(columns={"onset": "start"}, inplace=True)
 
@@ -153,8 +173,7 @@ class Alvarez2022Haaglanden(study.Study):
         return eeg_events
 
     def _load_raw(self, timeline: dict[str, tp.Any]) -> mne.io.BaseRaw:
-        sub_dir = self.path / "download" / "recordings"
-        fname_eeg = sub_dir / f"{timeline['subject']}.edf"
+        fname_eeg = self._recording_file(timeline, ".edf")
 
         raw = mne.io.read_raw_edf(fname_eeg)
         # Fix channel names, types, and add montage

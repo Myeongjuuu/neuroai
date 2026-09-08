@@ -314,8 +314,8 @@ def build_brain_model(
         verbose=0,
     )
     LOGGER.info("Model summary:\n%s", model_summary)
-    n_total_params: int = model_summary.total_params
-    n_trainable_params: int = model_summary.trainable_params
+    n_total_params = model_summary.total_params
+    n_trainable_params = model_summary.trainable_params
     if wandb_logger is not None:
         # Not experiment.config[...]: outside rank zero that attribute is a dummy
         # method, so assigning to it raises TypeError under DDP.

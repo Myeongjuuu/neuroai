@@ -92,6 +92,13 @@ class Zyma2019Electroencephalograms(study.Study):
     def _download_root(self) -> Path:
         return self.path / "download" / self._PHYSIONET_STUDY / self._PHYSIONET_VERSION
 
+    def _download_roots(self) -> tuple[Path, Path]:
+        # Some existing NeuralBench checkouts keep the PhysioNet files directly
+        # under `download/` instead of `download/eegmat/1.0.0/`.  Try the
+        # canonical PhysioNet layout first, then the legacy flat layout, but
+        # decide based on the requested file instead of directory existence.
+        return self._download_root(), self.path / "download"
+
     def iter_timelines(self) -> tp.Iterator[dict[str, tp.Any]]:
         task_map = {"1": "rest", "2": "mental_arithmetic"}
         for i in range(1, 36):
@@ -118,10 +125,20 @@ class Zyma2019Electroencephalograms(study.Study):
         return eeg_events
 
     def _get_eeg_filename(self, timeline: dict[str, tp.Any]) -> Path:
-        return self._download_root() / f"{timeline['subject']}_{timeline['run']}.edf"
+        filename = f"{timeline['subject']}_{timeline['run']}.edf"
+        for root in self._download_roots():
+            path = root / filename
+            if path.exists():
+                return path
+        return self._download_root() / filename
 
     def _get_subject_info(self, timeline: dict[str, tp.Any]) -> pd.Series:
-        file_path = self._download_root() / "subject-info.csv"
+        for root in self._download_roots():
+            file_path = root / "subject-info.csv"
+            if file_path.exists():
+                break
+        else:
+            file_path = self._download_root() / "subject-info.csv"
         subj_info = pd.read_csv(file_path)
         output = subj_info[subj_info.Subject == timeline["subject"]].squeeze()
         assert isinstance(output, pd.Series)

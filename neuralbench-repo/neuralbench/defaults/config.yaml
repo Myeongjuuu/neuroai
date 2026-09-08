@@ -86,7 +86,7 @@ data:
       folder: !!python/name:neuralbench.config_manager.CACHE_DIR
       cpus_per_task: !!python/name:neuralbench.config_manager.N_CPUS
   batch_size: 64
-  num_workers: !!python/name:neuralbench.config_manager.N_CPUS
+  num_workers: 10
   seed: 33
 brain_model_config:
   name: EEGNet

@@ -195,6 +195,128 @@ class NormalizedRMSE(torchmetrics.regression.MeanSquaredError):
         return rmse / std
 
 
+def _tuev_single_label_view(
+    preds: torch.Tensor,
+    target: torch.Tensor,
+    background_index: int,
+) -> tuple[torch.Tensor, torch.Tensor]:
+    pred_labels = preds.detach().argmax(dim=-1).reshape(-1).to(torch.long)
+    target = target.detach()
+    if target.ndim == 1:
+        target_labels = target.reshape(-1).to(torch.long)
+    else:
+        flat = target.reshape(-1, target.shape[-1])
+        positive = flat > 0
+        target_labels = torch.full(
+            (flat.shape[0],),
+            background_index,
+            dtype=torch.long,
+            device=flat.device,
+        )
+        has_positive = positive.any(dim=-1)
+        if has_positive.any():
+            # TUEV papers report a single class per EEG segment. NeuralBench's
+            # clinical_event target can be multilabel after window aggregation,
+            # so this reproducibility view picks the first active class and
+            # maps empty windows to the TUEV background class.
+            target_labels[has_positive] = positive.to(torch.long).argmax(dim=-1)[
+                has_positive
+            ]
+    return pred_labels, target_labels
+
+
+def _tuev_confusion_matrix(
+    preds: torch.Tensor,
+    target: torch.Tensor,
+    num_classes: int,
+) -> torch.Tensor:
+    valid = (target >= 0) & (target < num_classes)
+    preds = preds[valid].clamp(0, num_classes - 1)
+    target = target[valid]
+    if target.numel() == 0:
+        return torch.zeros(num_classes, num_classes, dtype=torch.float32, device=preds.device)
+    indices = target * num_classes + preds
+    return torch.bincount(
+        indices,
+        minlength=num_classes * num_classes,
+    ).reshape(num_classes, num_classes).to(torch.float32)
+
+
+class TUEVBalancedAccuracy(torchmetrics.Metric):
+    """Single-label balanced accuracy for TUEV-style paper reporting."""
+
+    is_differentiable: bool = False
+    higher_is_better: bool = True
+    full_state_update: bool = True
+
+    def __init__(self, num_classes: int = 6, background_index: int = 1) -> None:
+        super().__init__()
+        self.num_classes = num_classes
+        self.background_index = background_index
+        self.add_state(
+            "confusion",
+            default=torch.zeros(num_classes, num_classes, dtype=torch.float32),
+            dist_reduce_fx="sum",
+        )
+
+    def update(self, preds: torch.Tensor, target: torch.Tensor) -> None:
+        pred_labels, target_labels = _tuev_single_label_view(
+            preds,
+            target,
+            self.background_index,
+        )
+        self.confusion = self.confusion + _tuev_confusion_matrix(
+            pred_labels,
+            target_labels,
+            self.num_classes,
+        ).to(self.confusion.device)
+
+    def compute(self) -> torch.Tensor:
+        confusion = self.confusion
+        support = confusion.sum(dim=1)
+        present = support > 0
+        if not present.any():
+            return torch.tensor(0.0, device=confusion.device)
+        recall = confusion.diag() / support.clamp(min=1)
+        return recall[present].mean()
+
+
+class TUEVF1Weighted(TUEVBalancedAccuracy):
+    """Single-label weighted F1 for TUEV-style paper reporting."""
+
+    def compute(self) -> torch.Tensor:
+        confusion = self.confusion
+        support = confusion.sum(dim=1)
+        tp = confusion.diag()
+        precision = tp / confusion.sum(dim=0).clamp(min=1)
+        recall = tp / support.clamp(min=1)
+        f1 = torch.where(
+            precision + recall > 0,
+            2 * precision * recall / (precision + recall).clamp(min=1e-12),
+            torch.zeros_like(precision),
+        )
+        total_support = support.sum()
+        if total_support <= 0:
+            return torch.tensor(0.0, device=confusion.device)
+        return (f1 * support).sum() / total_support
+
+
+class TUEVCohenKappa(TUEVBalancedAccuracy):
+    """Single-label Cohen's kappa for TUEV-style paper reporting."""
+
+    def compute(self) -> torch.Tensor:
+        confusion = self.confusion
+        total = confusion.sum()
+        if total <= 0:
+            return torch.tensor(0.0, device=confusion.device)
+        observed = confusion.diag().sum() / total
+        expected = (confusion.sum(dim=0) * confusion.sum(dim=1)).sum() / (total * total)
+        denom = 1.0 - expected
+        if torch.isclose(denom, torch.tensor(0.0, device=confusion.device)):
+            return torch.tensor(0.0, device=confusion.device)
+        return (observed - expected) / denom
+
+
 class Rank(torchmetrics.Metric):
     """Rank of predictions based on a retrieval set, using cosine similarity.
 

@@ -64,6 +64,23 @@ def get_classification_metric_configs(
                     },
                 },
                 {
+                    "log_name": "f1_score_weighted",
+                    "name": "F1Score",
+                    "kwargs": {
+                        "task": "multiclass",
+                        "average": "weighted",
+                        "num_classes": n_classes_or_labels,
+                    },
+                },
+                {
+                    "log_name": "cohen_kappa",
+                    "name": "CohenKappa",
+                    "kwargs": {
+                        "task": "multiclass",
+                        "num_classes": n_classes_or_labels,
+                    },
+                },
+                {
                     "log_name": "confusion_matrix",
                     "name": "ConfusionMatrix",
                     "kwargs": {"task": "multiclass", "num_classes": n_classes_or_labels},
@@ -91,6 +108,37 @@ def get_classification_metric_configs(
             ]
         )
 
+    return metrics
+
+
+def get_clinical_event_metric_configs(n_classes_or_labels: int) -> list[dict[str, tp.Any]]:
+    metrics = get_classification_metric_configs(n_classes_or_labels, "multilabel")
+    # TUEV papers conventionally report single-label balanced accuracy,
+    # weighted F1, and Cohen's kappa. NeuralBench keeps clinical_event as a
+    # multilabel task, so these are added as auxiliary paper-reporting metrics
+    # without replacing the benchmark's default multilabel metrics.
+    metrics.extend(
+        [
+            {
+                "log_name": "tuev_bal_acc",
+                "name": "TUEVBalancedAccuracy",
+                "num_classes": n_classes_or_labels,
+                "background_index": 1,
+            },
+            {
+                "log_name": "tuev_f1_weighted",
+                "name": "TUEVF1Weighted",
+                "num_classes": n_classes_or_labels,
+                "background_index": 1,
+            },
+            {
+                "log_name": "tuev_cohen_kappa",
+                "name": "TUEVCohenKappa",
+                "num_classes": n_classes_or_labels,
+                "background_index": 1,
+            },
+        ]
+    )
     return metrics
 
 

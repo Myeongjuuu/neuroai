@@ -223,10 +223,15 @@ class Data(ns.BaseModel):
             if isinstance(self.trigger_event_type, str)
             else self.trigger_event_type
         )
+        events, trigger_query = self._deduplicate_clinical_event_triggers(
+            events,
+            trigger_event_type,
+            default_query=f"type in {trigger_event_type}",
+        )
         segmenter = ns.dataloader.Segmenter(
             start=self.start,
             duration=self.duration,
-            trigger_query=f"type in {trigger_event_type}",
+            trigger_query=trigger_query,
             stride=self.stride,
             stride_drop_incomplete=self.stride_drop_incomplete,
             extractors=extractors,  # type: ignore[arg-type]
@@ -309,6 +314,44 @@ class Data(ns.BaseModel):
 
         return loaders
 
+    def _deduplicate_clinical_event_triggers(
+        self,
+        events: tp.Any,
+        trigger_event_type: list[str],
+        *,
+        default_query: str,
+    ) -> tuple[tp.Any, str]:
+        if set(trigger_event_type) != {"EpileptiformActivity", "Artifact"}:
+            return events, default_query
+        if "state" not in events.columns:
+            return events, default_query
+
+        trigger_mask = events.type.isin(trigger_event_type)
+        trigger_keys = ["timeline", "start", "type"]
+        duplicated = trigger_mask & events.duplicated(subset=trigger_keys, keep="first")
+        if not trigger_mask.any() or not duplicated.any():
+            return events, default_query
+
+        events = events.copy()
+        trigger_col = "_neuralbench_segment_trigger"
+        events[trigger_col] = False
+        first_trigger = trigger_mask & ~events.duplicated(
+            subset=trigger_keys,
+            keep="first",
+        )
+        events.loc[first_trigger, trigger_col] = True
+        # Local TUEV annotations can contain one row per affected channel at
+        # the same timestamp.  Segment generation needs a single trigger per
+        # timeline/start/type, while target aggregation still sees every event
+        # row because no rows are removed from `events`.
+        LOGGER.info(
+            "Ignoring %d duplicate clinical_event trigger row(s) with identical %s; "
+            "rows are kept for target aggregation.",
+            int(duplicated.sum()),
+            trigger_keys,
+        )
+        return events, trigger_col
+
 
 def get_default_dataloaders(
     device: str, task: str, *, dataset: str | None = None, **overrides: tp.Any
@@ -338,15 +381,6 @@ def get_default_dataloaders(
     -------
     dict with keys ``"train"``, ``"val"``, ``"test"`` mapping to
     :class:`~torch.utils.data.DataLoader` instances.
-
-    Examples
-    --------
-    Extraction inherits the benchmark infra, which submits SLURM jobs where a
-    cluster is available. To extract in-process instead:
-
-    >>> loaders = get_default_dataloaders(
-    ...     "eeg", "audiovisual_stimulus", **{"neuro.infra.cluster": None}
-    ... )
     """
     _validate_inputs(device, task, model=None, downstream_wrapper=None, allow_all=False)
     _ensure_initialized()

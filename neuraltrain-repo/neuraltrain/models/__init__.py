@@ -6,7 +6,6 @@
 
 # Import modules to ensure configs are registered with DiscriminatedModel
 from . import bendr as _bendr  # noqa: F401
-from . import blpm as _blpm  # noqa: F401
 from . import common as _common  # noqa: F401
 from . import conformer as _conformer  # noqa: F401
 from . import conv_transformer as _conv_transformer  # noqa: F401

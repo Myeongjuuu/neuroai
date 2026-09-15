@@ -7,8 +7,8 @@ neurolm:
   eeg_token_samples: 200
   max_eeg_tokens: 320
   max_text_tokens: 80
-  # Official downstream tasks use 276. COG-BCI has 62 channels x 5 seconds
-  # (=310 tokens), which still fits comfortably in NeuroLM's block size.
+  # Official downstream tasks use 276. The current COG-BCI preparation has
+  # 63 channels x 5 seconds (=315 tokens), which fits in the 320-token cap.
 data:
   neuro:
     frequency: 200.0

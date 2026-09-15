@@ -59,6 +59,7 @@ def run_benchmark(
     text_batch_size: int = 16,
     epochs: int = 5,
     gradient_accumulation_steps: int = 1,
+    log_interval: int = 10,
     learning_rate: float = 5e-4,
     no_text_loss: bool = False,
 ) -> list[dict[str, tp.Any]]:
@@ -161,6 +162,7 @@ def run_benchmark(
             text_batch_size=text_batch_size,
             epochs=epochs,
             gradient_accumulation_steps=gradient_accumulation_steps,
+            log_interval=log_interval,
             learning_rate=learning_rate,
             seed=selected_seed,
             no_text_loss=no_text_loss,
@@ -340,6 +342,7 @@ def run_benchmark_cli() -> None:
     parser.add_argument("--text-batch-size", type=int, default=16)
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--gradient-accumulation-steps", type=int, default=1)
+    parser.add_argument("--log-interval", type=int, default=10)
     parser.add_argument("--learning-rate", type=float, default=5e-4)
     parser.add_argument(
         "--no-text-loss",
@@ -390,6 +393,7 @@ def run_benchmark_cli() -> None:
             text_batch_size=args.text_batch_size,
             epochs=args.epochs,
             gradient_accumulation_steps=args.gradient_accumulation_steps,
+            log_interval=args.log_interval,
             learning_rate=args.learning_rate,
             no_text_loss=args.no_text_loss,
 >>>>>>> 3c92911 (Integrate official-style NeuroLM multitask instruction tuning)

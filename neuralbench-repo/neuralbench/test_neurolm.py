@@ -17,6 +17,7 @@ from neuralbench.instruction_models.backends.neurolm.distributed import (
 )
 from neuralbench.instruction_models.backends.neurolm.runner import _target_labels
 from neuralbench.instruction_models.backends.neurolm.multitask import (
+    select_task_configs,
     task_neuro_overrides,
 )
 
@@ -87,6 +88,21 @@ def test_neurolm_task_specs_cover_the_seven_tasks() -> None:
     ]
     for task, dataset, n_classes in cases:
         assert len(builtin_task_spec(task, dataset).answers) == n_classes
+
+
+def test_neurolm_control_task_selection_keeps_canonical_order() -> None:
+    selected = select_task_configs(("hmc", "tuab"))
+    assert [task.name for task in selected] == ["tuab", "hmc"]
+
+
+def test_choice_parser_uses_prepared_label_order() -> None:
+    spec = NeuroLMTaskSpec(
+        name="hmc",
+        prompt="Question: Answer: (",
+        answers=("(B)", "(C)", "(D)", "(E)", "(A)"),
+    )
+    assert spec.parse_answer("B) <|endoftext|>") == 0
+    assert spec.parse_answer("A) <|endoftext|>") == 4
 
 
 def test_tuev_empty_multihot_maps_to_background() -> None:

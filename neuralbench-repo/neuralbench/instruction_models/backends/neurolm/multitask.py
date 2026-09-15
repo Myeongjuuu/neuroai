@@ -27,6 +27,21 @@ BLPM_SEVEN_TASKS = (
     NeuroLMTaskConfig("cog_bci_workload", "mental_workload"),
 )
 
+
+def select_task_configs(task_names: tuple[str, ...] = ()) -> tuple[NeuroLMTaskConfig, ...]:
+    """Return the requested subset of the fixed NeuralBench NeuroLM suite."""
+    if not task_names:
+        return BLPM_SEVEN_TASKS
+    by_name = {task.name: task for task in BLPM_SEVEN_TASKS}
+    unknown = [name for name in task_names if name not in by_name]
+    if unknown:
+        choices = ", ".join(by_name)
+        raise ValueError(f"Unknown NeuroLM train task(s) {unknown}; choose from: {choices}")
+    # Preserve the suite's canonical order even when names are supplied in a
+    # different order, so task scheduling remains reproducible.
+    requested = set(task_names)
+    return tuple(task for task in BLPM_SEVEN_TASKS if task.name in requested)
+
 TASK_NEURO_OVERRIDES: dict[tuple[str, str | None], dict[str, Any]] = {
     # Match official NeuroLM's four HMC EEG derivations; NeuralFetch also
     # exposes EMG/ECG, which are not valid NeuroLM channel tokens.
@@ -48,7 +63,11 @@ def task_neuro_overrides(task: str, dataset: str | None) -> dict[str, Any]:
 
 
 def build_seven_task_loaders(
-    *, batch_size: int, num_workers: int, debug: bool = False
+    *,
+    batch_size: int,
+    num_workers: int,
+    debug: bool = False,
+    task_names: tuple[str, ...] = (),
 ) -> dict[str, dict[str, Any]]:
     """Prepare the seven NeuralBench loaders with NeuroLM preprocessing."""
     from neuralbench import get_default_dataloaders
@@ -56,7 +75,7 @@ def build_seven_task_loaders(
 
     preprocessing = _load_preprocessing_config()["neuro"]
     loaders: dict[str, dict[str, Any]] = {}
-    for task in BLPM_SEVEN_TASKS:
+    for task in select_task_configs(task_names):
         effective_batch = min(batch_size, 8) if debug else batch_size
         effective_workers = 0 if debug else num_workers
         overrides = {

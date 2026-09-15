@@ -69,9 +69,14 @@ class NeuroLMTaskSpec:
             candidate = "(" + generated_text.lstrip()
         match = re.search(r"\(([A-Za-z])\)", candidate)
         if match is not None:
-            index = ord(match.group(1).upper()) - ord("A")
-            if 0 <= index < len(self.answers):
-                return index
+            # ``answers`` follows the prepared NeuralBench label order, which
+            # need not be alphabetical.  Return that label index rather than
+            # the ordinal of the generated option letter.
+            choice = f"({match.group(1).upper()})"
+            try:
+                return self.answers.index(choice)
+            except ValueError:
+                pass
 
         normalized = candidate.strip().lower()
         for index, answer in enumerate(self.answers):

@@ -10,6 +10,8 @@ import sys
 from pathlib import Path
 from typing import Any
 
+import torch
+
 from .checkpoint import load_neurolm_checkpoint
 from .distributed import close_distributed, distributed_context, distributed_predict
 from .presets import align_task_spec_to_dataset, builtin_task_spec
@@ -161,50 +163,83 @@ def _prepare_loaders(
     )
 
 
-def _contract_summary(
-    loaders: dict[str, Any], *, multi_task: bool
+def _batch_contract_summary(
+    *,
+    name: str,
+    task: str,
+    dataset: str | None,
+    parts: dict[str, Any],
 ) -> dict[str, Any]:
-    """Materialize one train batch and validate the NeuroLM tensor contract."""
+    """Summarize one train batch before an expensive instruction-tuning run.
+
+    This deliberately reports the data *after* NeuralBench preprocessing and
+    before NeuroLM tokenization.  It makes channel order, amplitude scale,
+    label-to-answer order, and padding visible without loading a checkpoint.
+    """
     from .instruction import build_instruction_batch
+    from .runner import _channel_names_from_dataset
 
-    if multi_task:
-        from .multitask import BLPM_SEVEN_TASKS
+    spec = align_task_spec_to_dataset(
+        builtin_task_spec(task, dataset), parts["train"].dataset, task
+    )
+    batch = next(iter(parts["train"]))
+    data = getattr(batch, "data", batch)
+    neuro = data["neuro"].float()
+    instruction = build_instruction_batch(
+        batch, parts["train"], spec, device="cpu"
+    )
+    targets = instruction.targets.cpu()
+    return {
+        "name": name,
+        "splits": {split: len(loader.dataset) for split, loader in parts.items()},
+        "channels": _channel_names_from_dataset(parts["train"].dataset),
+        "raw_eeg_shape": list(neuro.shape),
+        "raw_eeg_stats": {
+            "min": float(neuro.min()),
+            "max": float(neuro.max()),
+            "mean": float(neuro.mean()),
+            "std": float(neuro.std()),
+        },
+        "eeg_shape": list(instruction.x_eeg.shape),
+        "valid_eeg_tokens": int(instruction.input_mask[0].sum()),
+        "text_shape": list(instruction.x_text.shape),
+        "batch_label_counts": torch.bincount(
+            targets, minlength=len(spec.answers)
+        ).tolist(),
+        "answers_by_neuralbench_index": list(spec.answers),
+        "background_label": spec.background_label,
+        "prompt": spec.prompt,
+    }
 
-        entries = (
-            (
-                item.name,
-                item.neuralbench_task,
-                item.dataset,
-                loaders[item.name],
-            )
-            for item in BLPM_SEVEN_TASKS
+
+def _contract_summary(
+    loaders: dict[str, Any], *, multi_task: bool, task: str | None = None,
+    dataset: str | None = None,
+) -> dict[str, Any]:
+    """Materialize batch contracts for either the seven-task suite or one task."""
+    if not multi_task:
+        if task is None:
+            raise ValueError("Single-task contract summary requires task metadata.")
+        return _batch_contract_summary(
+            name=task, task=task, dataset=dataset, parts=loaders
         )
-    else:
-        raise ValueError("Single-task contract summary requires task metadata.")
-    summary = {}
-    for name, task, dataset, parts in entries:
-        spec = align_task_spec_to_dataset(
-            builtin_task_spec(task, dataset), parts["train"].dataset, task
+
+    from .multitask import BLPM_SEVEN_TASKS
+
+    return {
+        item.name: _batch_contract_summary(
+            name=item.name,
+            task=item.neuralbench_task,
+            dataset=item.dataset,
+            parts=loaders[item.name],
         )
-        instruction = build_instruction_batch(
-            next(iter(parts["train"])),
-            parts["train"],
-            spec,
-            device="cpu",
-        )
-        summary[name] = {
-            "splits": {
-                split: len(loader.dataset) for split, loader in parts.items()
-            },
-            "eeg_shape": list(instruction.x_eeg.shape),
-            "text_shape": list(instruction.x_text.shape),
-            "answers_by_neuralbench_index": list(spec.answers),
-            "background_label": spec.background_label,
-        }
-    return summary
+        for item in BLPM_SEVEN_TASKS
+    }
 
 
 def run(args: argparse.Namespace) -> dict[str, Any]:
+    if args.train_tasks and not args.multi_task:
+        raise ValueError("--train-tasks requires --multi-task.")
     if args.gpus and args.gpus != "__distributed__" and "RANK" not in os.environ:
         launch_argv = getattr(args, "_neurolm_argv", sys.argv[1:])
         exit_code = _launch_multi_gpu(launch_argv, args.gpus)
@@ -216,7 +251,7 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
     distributed, rank, world_size, detected_device = distributed_context()
     device = detected_device if distributed else __import__("torch").device(args.device)
     try:
-        if args.prepare or args.download:
+        if args.prepare or args.download or args.audit:
             loaders = _prepare_loaders(
                 args.task,
                 args.dataset,
@@ -226,20 +261,31 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 debug=args.debug,
             )
             if rank == 0:
-                if args.multi_task:
-                    summary = _contract_summary(loaders, multi_task=True)
+                if args.multi_task or args.audit:
+                    summary = _contract_summary(
+                        loaders,
+                        multi_task=args.multi_task,
+                        task=args.task,
+                        dataset=args.dataset,
+                    )
                 else:
                     summary = {
                         split: len(loader.dataset) for split, loader in loaders.items()
                     }
-                print(json.dumps({"prepared": summary}, indent=2))
-            return {"prepared": True}
+                print(json.dumps({"prepared": summary, "audit": args.audit}, indent=2))
+            return {"prepared": True, "audit": args.audit}
 
         source, checkpoint, text_root = resolve_paths(
             args.official_source_root, args.checkpoint, args.text_data_dir
         )
         if args.multi_task:
             from .training import NeuroLMTrainingConfig, train_multitask
+
+            task_names = tuple(
+                name.strip()
+                for name in (args.train_tasks or "").split(",")
+                if name.strip()
+            )
 
             config = NeuroLMTrainingConfig(
                 source_root=source,
@@ -259,10 +305,12 @@ def run(args: argparse.Namespace) -> dict[str, Any]:
                 grad_clip=args.grad_clip,
                 gradient_accumulation_steps=args.gradient_accumulation_steps,
                 warmup_ratio=args.warmup_ratio,
+                log_interval=args.log_interval,
                 seed=args.seed,
                 debug=args.debug,
                 force=args.force,
                 no_text_loss=args.no_text_loss,
+                task_names=task_names,
             )
             return train_multitask(config)
 
@@ -339,12 +387,25 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--output", type=Path)
     parser.add_argument("--output-dir", default="outputs")
     parser.add_argument("--multi-task", action="store_true")
+    parser.add_argument(
+        "--train-tasks",
+        help=(
+            "Comma-separated subset of the fixed NeuroLM suite for a control run, "
+            "for example: hmc or hmc,tuab. Requires --multi-task."
+        ),
+    )
     parser.add_argument("--prepare", action="store_true")
     parser.add_argument("--download", action="store_true")
+    parser.add_argument(
+        "--audit",
+        action="store_true",
+        help="Print one pre-tokenization NeuroLM batch contract without loading a checkpoint.",
+    )
     parser.add_argument("--debug", action="store_true")
     parser.add_argument("--force", action="store_true")
     parser.add_argument("--epochs", type=int, default=5)
     parser.add_argument("--gradient-accumulation-steps", type=int, default=1)
+    parser.add_argument("--log-interval", type=int, default=10)
     parser.add_argument("--learning-rate", type=float, default=5e-4)
     parser.add_argument("--min-learning-rate", type=float, default=5e-5)
     parser.add_argument("--weight-decay", type=float, default=0.1)
@@ -376,6 +437,7 @@ def run_from_neuralbench(
     text_batch_size: int,
     epochs: int,
     gradient_accumulation_steps: int,
+    log_interval: int,
     learning_rate: float,
     seed: int,
     no_text_loss: bool,
@@ -416,12 +478,15 @@ def run_from_neuralbench(
         output=None,
         output_dir=output_dir,
         multi_task=multi_task,
+        train_tasks=None,
         prepare=prepare,
         download=download,
+        audit=False,
         debug=debug,
         force=force,
         epochs=epochs,
         gradient_accumulation_steps=gradient_accumulation_steps,
+        log_interval=log_interval,
         learning_rate=learning_rate,
         min_learning_rate=5e-5,
         weight_decay=0.1,
@@ -436,6 +501,7 @@ def run_from_neuralbench(
         "--text-batch-size", str(text_batch_size),
         "--output-dir", output_dir, "--epochs", str(epochs),
         "--gradient-accumulation-steps", str(gradient_accumulation_steps),
+        "--log-interval", str(log_interval),
         "--learning-rate", str(learning_rate), "--seed", str(seed),
     ]
     for flag, value in (

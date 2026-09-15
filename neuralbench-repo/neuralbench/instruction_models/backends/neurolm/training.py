@@ -21,9 +21,9 @@ from .checkpoint import load_neurolm_checkpoint
 from .distributed import distributed_predict
 from .instruction import build_instruction_batch
 from .multitask import (
-    BLPM_SEVEN_TASKS,
     build_seven_task_loaders,
     iter_multitask_train_batches,
+    select_task_configs,
 )
 from .presets import align_task_spec_to_dataset, builtin_task_spec
 from .runner import predict
@@ -52,9 +52,11 @@ class NeuroLMTrainingConfig:
     warmup_ratio: float = 0.1
     block_size: int = 1024
     seed: int = 1337
+    log_interval: int = 10
     debug: bool = False
     force: bool = False
     no_text_loss: bool = False
+    task_names: tuple[str, ...] = ()
 
 
 def _rebuild_train_loader(
@@ -200,6 +202,7 @@ def _evaluate(
     model: torch.nn.Module,
     loaders: dict[str, dict[str, Any]],
     *,
+    task_configs: tuple[Any, ...],
     rank: int,
     world_size: int,
     device: torch.device,
@@ -208,7 +211,7 @@ def _evaluate(
     raw_model = model.module if isinstance(model, DistributedDataParallel) else model
     raw_model.eval()
     output: dict[str, Any] = {}
-    for task in BLPM_SEVEN_TASKS:
+    for task in task_configs:
         loader = loaders[task.name]["val"]
         spec = align_task_spec_to_dataset(
             builtin_task_spec(task.neuralbench_task, task.dataset),
@@ -253,10 +256,12 @@ def train_multitask(config: NeuroLMTrainingConfig) -> dict[str, Any]:
     if config.device.type == "cuda":
         torch.cuda.set_device(config.device)
 
+    task_configs = select_task_configs(config.task_names)
     loaders = build_seven_task_loaders(
         batch_size=config.batch_size,
         num_workers=0 if config.debug else config.num_workers,
         debug=config.debug,
+        task_names=config.task_names,
     )
     for parts in loaders.values():
         parts["train"] = _rebuild_train_loader(
@@ -269,7 +274,7 @@ def train_multitask(config: NeuroLMTrainingConfig) -> dict[str, Any]:
             loaders[task.name]["train"].dataset,
             task.neuralbench_task,
         )
-        for task in BLPM_SEVEN_TASKS
+        for task in task_configs
     }
     model = load_neurolm_checkpoint(
         config.checkpoint, config.source_root, device=config.device
@@ -281,7 +286,8 @@ def train_multitask(config: NeuroLMTrainingConfig) -> dict[str, Any]:
         (config.beta1, config.beta2),
         config.device.type,
     )
-    checkpoint_path = config.output_dir / "checkpoints" / "neurolm-7task" / "ckpt.pt"
+    run_name = "neurolm-7task" if not config.task_names else "neurolm-" + "-".join(config.task_names)
+    checkpoint_path = config.output_dir / "checkpoints" / run_name / "ckpt.pt"
     start_epoch = 0
     global_step = 0
     if checkpoint_path.is_file() and not config.force:
@@ -381,7 +387,8 @@ def train_multitask(config: NeuroLMTrainingConfig) -> dict[str, Any]:
                 scaler.update()
                 optimizer.zero_grad(set_to_none=True)
                 global_step += 1
-                if config.rank == 0 and global_step % (1 if config.debug else 10) == 0:
+                interval = 1 if config.debug else max(1, config.log_interval)
+                if config.rank == 0 and global_step % interval == 0:
                     print(
                         f"epoch={epoch + 1}/{config.epochs} step={global_step} "
                         f"task={task_name} loss={running / micro_step:.4f} lr={lr:.3e}",
@@ -401,6 +408,7 @@ def train_multitask(config: NeuroLMTrainingConfig) -> dict[str, Any]:
         last_validation = _evaluate(
             model,
             loaders,
+            task_configs=task_configs,
             rank=config.rank,
             world_size=config.world_size,
             device=config.device,

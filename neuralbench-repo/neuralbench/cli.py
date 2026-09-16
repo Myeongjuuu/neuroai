@@ -304,8 +304,6 @@ def run_benchmark_cli() -> None:
         help="Plot from cached results only, without running any experiments.",
     )
     parser.add_argument(
-<<<<<<< HEAD
-=======
         "--seed",
         type=int,
         nargs="+",
@@ -350,7 +348,6 @@ def run_benchmark_cli() -> None:
         help="Disable the auxiliary text loss for instruction models.",
     )
     parser.add_argument(
->>>>>>> 3c92911 (Integrate official-style NeuroLM multitask instruction tuning)
         "--dataset",
         type=str,
         default=None,
@@ -379,8 +376,6 @@ def run_benchmark_cli() -> None:
             prepare=args.prepare,
             download=args.download,
             plot_cached=args.plot_cached,
-<<<<<<< HEAD
-=======
             seed=args.seed,
             wandb_paper_summary=args.wandb_paper_summary,
             multi_task=args.multi_task,
@@ -396,7 +391,6 @@ def run_benchmark_cli() -> None:
             log_interval=args.log_interval,
             learning_rate=args.learning_rate,
             no_text_loss=args.no_text_loss,
->>>>>>> 3c92911 (Integrate official-style NeuroLM multitask instruction tuning)
         )
     except Exception:
         if not args.pdb:

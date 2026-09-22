@@ -3,33 +3,51 @@ Track 3 -- Sleep onset (cross-user latency prediction)
 =======================================================
 
 .. image:: https://neural-interfaces26.github.io/exports/sleep-onset.gif
-   :alt: Seconds to first stable N2 predicted from wearable EEG
+   :alt: Seconds to the first N2 epoch predicted from wearable EEG
    :target: https://neural-interfaces26.github.io/tracks.html
    :width: 100%
 
 Given continuous four-channel wearable EEG recorded at home, predict the
-seconds remaining until the first stable N2 epoch. The competition tests
-**cross-user** generalisation: training and evaluation use the same Muse
-headband, the same home protocol and the same target, but the sleepers in
-the evaluation cohort are never seen in training. Precise onset timing
-replaces full hypnogram reconstruction because a sparse wearable montage
-supports it poorly.
+seconds remaining until the **first N2 epoch** -- the first epoch scored
+N2, not the start of a run of consecutive N2 epochs. The competition tests
+generalisation across nights and across sleepers on one consumer device:
+training and evaluation use the same Muse headband, the same home protocol
+and the same target. Precise onset timing replaces full hypnogram
+reconstruction because a sparse wearable montage supports it poorly.
 
-- **Shift**: seen sleepers -> unseen sleepers, on one consumer device.
-  Night-to-night variation, motion artifacts, impedance changes and channel
-  dropout come with the home setting.
-- **Headline metric**: ``bMAE`` in seconds -- onset error averaged with
-  equal weight over four time-to-onset ranges, so long and short
-  latencies count the same (lower is better). The competition additionally
-  reports tolerance rates within 30 / 60 / 300 s; the starter kit logs
-  ``bMAE`` and the usual regression metrics, not those rates.
-- **Data**: continuous Muse wearable EEG, ~1000 training subjects with
-  ``n2_onset`` annotations, and a separate hidden evaluation cohort of the
-  same order of magnitude recorded with the same hardware and protocol.
-  The onset that ``AddSleepOnsetTargets`` extracts is the earliest
-  annotated N2 event of the recording; it applies no persistence or
-  non-Wake-continuity rule, so check the competition's definition of
-  *stable* N2 before reshaping the target to match it.
+- **Shift**: nights and sleepers, on one consumer device. The evaluation
+  cohort contains **both sleepers seen in training and sleepers never seen
+  in training**, so a model has to hold up on new nights from familiar
+  people as well as on new people. Night-to-night variation, motion
+  artifacts, impedance changes and channel dropout come with the home
+  setting.
+- **Headline metric**: binned onset error in seconds, lower is better, but
+  the binning is weighted differently in each phase. Both phases split the
+  error by *true* time to onset into [0, 40), [40, 90), [90, 300) and
+  [300, 600] s.
+
+  - *Sealed Muse phase*: **W-bMAE**. The four ranges carry severity
+    weights of **10x, 5x, 3x and 1x**, so an error close to onset costs
+    far more than one ten minutes out. W-bMAE is then computed separately
+    over seen subjects (new nights from people in the training set) and
+    unseen subjects, and the ranking score is the **macro-average of those
+    two**, weighting night-to-night and inter-person generalisation
+    equally.
+  - *Current Sleep-EDF warm-up*: **unweighted bMAE** plus plain MAE. This
+    is a temporary proxy. It switches to the Muse W-bMAE scheme when the
+    Muse warm-up data lands, and the Codabench scorer and this start kit
+    are due to be updated together at that point.
+
+  ``neuralbench.metrics.BinnedMAE`` implements the unweighted form, so
+  ``val/bmae`` and ``test/bmae`` here match the warm-up scorer today and
+  not the sealed one. Nothing in the start kit computes the severity
+  weights or the seen/unseen macro-average.
+- **Data**: continuous Muse wearable EEG sampled at **128 Hz**, with
+  ``n2_onset`` annotations on the training cohort and a separate hidden
+  evaluation cohort recorded with the same hardware and protocol. More
+  details to come on the cohort size. The onset that
+  ``AddSleepOnsetTargets`` extracts is the earliest annotated N2 event of
+  the recording, which is exactly the competition's definition.
 
 .. note::
    The Muse training set is released through NeuralBench when
@@ -87,6 +105,36 @@ supports it poorly.
 #
 #    .. literalinclude:: ../../../../neuralbench-repo/neuralbench/tasks/eeg/sleep_onset/config.yaml
 #       :language: yaml
+
+# %%
+# Split and model selection
+# --------------------------
+#
+# **Split.** Participant-level 60 / 20 / 20, drawn by ``SklearnSplit`` with
+# ``split_by: subject``. Every recording from a participant lands in exactly
+# one fold, so no sleeper is shared between train, validation and test --
+# the starter kit's test score therefore measures generalisation to people
+# the model has never seen. Both split seeds are fixed at 33, so the
+# partition is identical on every machine and every run. On Sleep-EDF's 78
+# participants that resolves to **46 train / 16 validation / 16 test**.
+#
+# That 16-participant test partition *is* the current Codabench warm-up
+# evaluation set: the scorer runs on the same Sleep-EDF subset this split
+# produces at random state 33. A ``test/bmae`` here and a warm-up
+# leaderboard score are therefore the same measurement, which makes this
+# the one track where a local number should line up with the board.
+#
+# The sealed phase is a different story. Its Muse cohort mixes seen and
+# unseen sleepers, while this split holds every sleeper out, so the sealed
+# score is not something the starter kit can approximate.
+#
+# **Model selection.** The checkpoint with the lowest **``val/bmae``** is
+# kept -- validation binned MAE in seconds, the same quantity as the
+# warm-up ``test/bmae``, just on the validation fold. Training runs for at
+# most 40 epochs and stops early after 7 epochs without improvement; only
+# that single best checkpoint is scored on test. Note this selects on the
+# unweighted metric; when the sealed W-bMAE weights arrive, a model tuned
+# this way will be under-weighting the near-onset range that matters most.
 #
 # **How to change it**, in increasing order of effort:
 #

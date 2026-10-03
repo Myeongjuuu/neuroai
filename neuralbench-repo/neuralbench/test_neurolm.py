@@ -1,7 +1,9 @@
 """Unit tests for the dependency-light NeuroLM NeuralBench adapter."""
 
+import pandas as pd
 import torch
 
+from neuralbench.data import _collapse_trigger_collisions
 from neuralbench.instruction_models import load_backend
 from neuralbench.instruction_models.backends.neurolm import (
     NeuroLMInputAdapter,
@@ -18,8 +20,50 @@ from neuralbench.instruction_models.backends.neurolm.distributed import (
 from neuralbench.instruction_models.backends.neurolm.runner import _target_labels
 from neuralbench.instruction_models.backends.neurolm.multitask import (
     select_task_configs,
+    task_data_overrides,
     task_neuro_overrides,
 )
+
+
+def test_tuev_trigger_collision_policy_keeps_one_state_per_start() -> None:
+    events = pd.DataFrame(
+        [
+            {
+                "type": "EpileptiformActivity",
+                "timeline": 0,
+                "start": 1.0,
+                "duration": 2.0,
+                "state": "gped",
+                "channel": "{0,1}",
+                "split": "train",
+            },
+            {
+                "type": "EpileptiformActivity",
+                "timeline": 0,
+                "start": 1.0,
+                "duration": 1.0,
+                "state": "pled",
+                "channel": "{2}",
+                "split": "train",
+            },
+            {
+                "type": "Artifact",
+                "timeline": 0,
+                "start": 3.0,
+                "duration": 1.0,
+                "state": "eyem",
+                "channel": "{0}",
+                "split": "train",
+            },
+        ]
+    )
+    collapsed = _collapse_trigger_collisions(events, ["EpileptiformActivity"])
+    assert len(collapsed) == 2
+    assert collapsed.loc[collapsed["start"] == 1.0, "state"].item() == "gped"
+    assert task_data_overrides("clinical_event") == {
+        "trigger_collision_policy": "majority_channel"
+    }
+    assert task_data_overrides("pathology") == {}
 
 
 def test_tuab_answer_parser() -> None:

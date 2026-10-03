@@ -62,6 +62,13 @@ def task_neuro_overrides(task: str, dataset: str | None) -> dict[str, Any]:
     return dict(TASK_NEURO_OVERRIDES.get((task, dataset), {}))
 
 
+def task_data_overrides(task: str) -> dict[str, Any]:
+    """Return data-layer policies required by NeuroLM's task contracts."""
+    if task == "clinical_event":
+        return {"trigger_collision_policy": "majority_channel"}
+    return {}
+
+
 def build_seven_task_loaders(
     *,
     batch_size: int,
@@ -83,6 +90,7 @@ def build_seven_task_loaders(
             for key, value in preprocessing.items()
         }
         overrides.update(task_neuro_overrides(task.neuralbench_task, task.dataset))
+        overrides.update(task_data_overrides(task.neuralbench_task))
         loaders[task.name] = get_default_dataloaders(
             "eeg",
             task.neuralbench_task,

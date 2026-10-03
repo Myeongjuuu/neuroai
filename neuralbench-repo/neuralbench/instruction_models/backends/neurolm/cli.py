@@ -146,13 +146,14 @@ def _prepare_loaders(
             batch_size=batch_size, num_workers=workers, debug=debug
         )
     from neuralbench import get_default_dataloaders
-    from .multitask import task_neuro_overrides
+    from .multitask import task_data_overrides, task_neuro_overrides
 
     preprocessing = _load_preprocessing_config()
     overrides = {
         f"neuro.{key}": value for key, value in preprocessing["neuro"].items()
     }
     overrides.update(task_neuro_overrides(task, dataset))
+    overrides.update(task_data_overrides(task))
     return get_default_dataloaders(
         "eeg",
         task,

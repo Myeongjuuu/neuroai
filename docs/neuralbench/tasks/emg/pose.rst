@@ -75,7 +75,9 @@ Dataset Notes
   where ``vemg2pose`` regression scores 15.8 +- 1.4 degrees.  ``val`` keeps both
   of its scenarios, matching the validation split emg2pose selects models on.
   Note the paper averages within each user before reporting mean and standard
-  deviation across users, whereas ``test/mae`` pools frames.
+  deviation across users, whereas ``test/mae`` pools frames;
+  ``test/mae_subject_mean`` and ``test/mae_subject_std`` (sample SD) follow
+  the paper.
 * **Rotation augmentation**: training rotates the band by -1, 0 or +1 electrode
   (the paper's Appendix C.4), and never touches validation or test.  emg2pose
   redraws the offset for every window; braindecode's ``BandRotation`` draws one

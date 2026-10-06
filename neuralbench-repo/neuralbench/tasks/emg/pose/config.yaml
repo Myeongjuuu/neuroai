@@ -129,6 +129,14 @@ loss:
 metrics:
   - log_name: mae
     name: MeanAbsoluteError
+  - log_name: mae_subject_mean
+    name: GroupedMetric
+    metric_name: MeanAbsoluteError
+    reduction: mean
+  - log_name: mae_subject_std
+    name: GroupedMetric
+    metric_name: MeanAbsoluteError
+    reduction: std
   - log_name: rmse
     name: MeanSquaredError
     kwargs:

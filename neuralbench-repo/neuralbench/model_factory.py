@@ -123,6 +123,7 @@ def build_brain_model(
     val_loader: DataLoader | None = None,
     wandb_logger: WandbLogger | None = None,
     loss: BaseLoss | None = None,
+    task_name: str | None = None,
 ) -> tuple[torch.nn.Module, int, int, list[str] | None]:
     """Build, initialise and optionally wrap a brain model.
 
@@ -269,6 +270,7 @@ def build_brain_model(
             frequency=frequency,
             ch_names=ch_names,
             mesh=mesh,
+            task_name=task_name,
             ctc_blank_idx=ctc_blank_idx,
             load_targets=_load_targets,
             load_neuro_targets=_load_neuro_targets,
@@ -281,6 +283,7 @@ def build_brain_model(
             frequency=frequency,
             ch_names=ch_names,
             mesh=mesh,
+            task_name=task_name,
         )
     brain_model = brain_model_config.build_from_context(ctx)
 

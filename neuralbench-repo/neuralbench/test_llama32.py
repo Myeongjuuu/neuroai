@@ -4,6 +4,8 @@ import torch
 from torch import nn
 
 from neuralbench.pl_module import BrainModule
+from neuralbench.experiment_config import build_experiment_configs
+from neuralbench.registry import TASKS
 
 
 class _AdapterModel(nn.Module):
@@ -40,3 +42,15 @@ def test_llama_checkpoint_saves_adapter_and_strictly_restores_it():
     assert torch.equal(
         restored.model.eeg_projector.weight, module.model.eeg_projector.weight
     )
+
+
+def test_llama32_config_assembles_for_every_eeg_task():
+    configs = build_experiment_configs("eeg", "all", model="llama32", debug=True)
+    assert {config["task_name"] for config in configs} == set(TASKS["eeg"])
+    assert all(
+        config["brain_model_config"]["name"] == "Llama32EEG" for config in configs
+    )
+    variant = build_experiment_configs(
+        "eeg", "mental_arithmetic", model="llama32", dataset="shin2017b", debug=True
+    )
+    assert variant

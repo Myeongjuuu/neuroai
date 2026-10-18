@@ -1,11 +1,9 @@
-# Initial Llama 3.2 integration for the default EEG mental_arithmetic dataset.
-# LabelEncoder sorts the source labels: mental_arithmetic=0, rest=1.
+# Shared EEG model: the benchmark supplies task name and output width.
 brain_model_config:
   =replace=: true
   name: Llama32EEG
   model_name: meta-llama/Llama-3.2-3B-Instruct
-  prompt: "Classify this EEG segment. Is the person doing mental arithmetic (A) or resting (B)? Reply with A or B only."
-  answers: [A, B]
+  prompt_template: "Analyze this EEG recording for the {task} task."
   n_eeg_tokens: 16
   torch_dtype: bfloat16
 downstream_model_wrapper: null

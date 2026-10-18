@@ -11,6 +11,12 @@ from neuraltrain.models.llama32_eeg import Llama32EEG, Llama32EEGModel
 
 class _Tokenizer:
     def apply_chat_template(self, *args, **kwargs):
+        assert kwargs["tokenize"] is False
+        return "<prompt>"
+
+    def encode(self, prompt, **kwargs):
+        assert prompt == "<prompt>"
+        assert kwargs["add_special_tokens"] is False
         return [1, 2, 3]
 
 

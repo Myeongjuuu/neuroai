@@ -70,11 +70,12 @@ class Llama32EEGModel(nn.Module):
         from transformers import AutoModel, AutoTokenizer
 
         tokenizer = AutoTokenizer.from_pretrained(model_name)
-        prompt_ids = tokenizer.apply_chat_template(
+        prompt_text = tokenizer.apply_chat_template(
             [{"role": "user", "content": prompt}],
-            tokenize=True,
+            tokenize=False,
             add_generation_prompt=True,
         )
+        prompt_ids = tokenizer.encode(prompt_text, add_special_tokens=False)
         if not prompt_ids:
             raise ValueError("Llama chat template produced an empty prompt")
         self.register_buffer("prompt_ids", torch.tensor(prompt_ids, dtype=torch.long))

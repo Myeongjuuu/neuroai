@@ -50,6 +50,7 @@ def test_llama32_config_assembles_for_every_eeg_task():
     assert all(
         config["brain_model_config"]["name"] == "Llama32EEG" for config in configs
     )
+    assert all(config["data"]["batch_size"] == 2 for config in configs)
     variant = build_experiment_configs(
         "eeg", "mental_arithmetic", model="llama32", dataset="shin2017b", debug=True
     )

@@ -73,22 +73,28 @@ def test_llama32_uses_task_name_in_prompt(monkeypatch):
     import transformers
 
     prompts = []
+    revisions = []
 
     class Tokenizer(_Tokenizer):
         def apply_chat_template(self, messages, **kwargs):
             prompts.append(messages[0]["content"])
             return super().apply_chat_template(messages, **kwargs)
 
-    monkeypatch.setattr(
-        transformers.AutoTokenizer, "from_pretrained", lambda *a, **k: Tokenizer()
-    )
-    monkeypatch.setattr(
-        transformers.AutoModel, "from_pretrained", lambda *a, **k: _LanguageModel()
-    )
+    def load_tokenizer(*args, **kwargs):
+        revisions.append(kwargs["revision"])
+        return Tokenizer()
+
+    def load_model(*args, **kwargs):
+        revisions.append(kwargs["revision"])
+        return _LanguageModel()
+
+    monkeypatch.setattr(transformers.AutoTokenizer, "from_pretrained", load_tokenizer)
+    monkeypatch.setattr(transformers.AutoModel, "from_pretrained", load_model)
     model = Llama32EEG().build(
         n_spatial_locations=3, n_outputs=6, task_name="clinical_event"
     )
     assert "clinical event" in prompts[0]
+    assert revisions == [Llama32EEG().revision] * 2
     assert model(torch.randn(2, 3, 20)).shape == (2, 6)
 
 
@@ -122,4 +128,43 @@ def test_llama32_with_tiny_huggingface_llama(monkeypatch):
     loss.backward()
     assert torch.isfinite(loss)
     assert model.eeg_projector[1].weight.grad is not None
+    assert all(p.grad is None for p in model.llama.parameters())
+
+
+@pytest.mark.parametrize("task_kind", ["classification", "multilabel", "regression", "retrieval"])
+def test_llama32_trains_with_neuralbench_eeg_losses(monkeypatch, task_kind):
+    import transformers
+
+    from neuraltrain.losses.losses import ClipLoss
+
+    monkeypatch.setattr(
+        transformers.AutoTokenizer, "from_pretrained", lambda *a, **k: _Tokenizer()
+    )
+    monkeypatch.setattr(
+        transformers.AutoModel, "from_pretrained", lambda *a, **k: _LanguageModel()
+    )
+    widths = {"classification": 3, "multilabel": 6, "regression": 1, "retrieval": 16}
+    width = widths[task_kind]
+    model = Llama32EEGModel(
+        n_channels=3,
+        n_outputs=width,
+        model_name="fake-llama",
+        prompt="Analyze EEG",
+        n_eeg_tokens=4,
+        torch_dtype="float32",
+    )
+    predictions = model(torch.randn(2, 3, 40))
+    if task_kind == "classification":
+        loss = nn.CrossEntropyLoss()(predictions, torch.eye(width)[:2])
+    elif task_kind == "multilabel":
+        loss = nn.BCEWithLogitsLoss()(predictions, torch.randint(0, 2, predictions.shape).float())
+    elif task_kind == "regression":
+        loss = nn.MSELoss()(predictions, torch.randn_like(predictions))
+    else:
+        loss = ClipLoss(norm_kind="y", temperature=False, symmetric=False)(
+            predictions, torch.randn_like(predictions)
+        )
+    assert torch.isfinite(loss)
+    loss.backward()
+    assert model.output_head.weight.grad is not None
     assert all(p.grad is None for p in model.llama.parameters())

@@ -22,6 +22,7 @@ class Llama32EEG(BaseBrainModelConfig):
     """
 
     model_name: str = "meta-llama/Llama-3.2-3B-Instruct"
+    revision: str = "0cb88a4f764b7a12671c53f0838cd831a0843b95"
     prompt_template: str = "Analyze this EEG recording for the {task} task."
     n_eeg_tokens: int = 16
     torch_dtype: tp.Literal["bfloat16", "float16", "float32"] = "bfloat16"
@@ -41,6 +42,7 @@ class Llama32EEG(BaseBrainModelConfig):
             n_channels=n_spatial_locations,
             n_outputs=n_outputs,
             model_name=self.model_name,
+            revision=self.revision,
             prompt=self.prompt_template.format(task=task),
             n_eeg_tokens=self.n_eeg_tokens,
             torch_dtype=self.torch_dtype,
@@ -62,6 +64,7 @@ class Llama32EEGModel(nn.Module):
         n_channels: int,
         n_outputs: int,
         model_name: str,
+        revision: str | None = None,
         prompt: str,
         n_eeg_tokens: int,
         torch_dtype: str,
@@ -69,7 +72,7 @@ class Llama32EEGModel(nn.Module):
         super().__init__()
         from transformers import AutoModel, AutoTokenizer
 
-        tokenizer = AutoTokenizer.from_pretrained(model_name)
+        tokenizer = AutoTokenizer.from_pretrained(model_name, revision=revision)
         prompt_text = tokenizer.apply_chat_template(
             [{"role": "user", "content": prompt}],
             tokenize=False,
@@ -80,7 +83,10 @@ class Llama32EEGModel(nn.Module):
             raise ValueError("Llama chat template produced an empty prompt")
         self.register_buffer("prompt_ids", torch.tensor(prompt_ids, dtype=torch.long))
         self.llama = AutoModel.from_pretrained(
-            model_name, torch_dtype=getattr(torch, torch_dtype), low_cpu_mem_usage=True
+            model_name,
+            revision=revision,
+            torch_dtype=getattr(torch, torch_dtype),
+            low_cpu_mem_usage=True,
         )
         self.llama.requires_grad_(False)
         self.llama.config.use_cache = False

@@ -234,8 +234,12 @@ class Rank(torchmetrics.Metric):
 
     @classmethod
     def _compute_sim(cls, x, y, norm_kind="y", eps=1e-15):
+        # Full retrieval evaluation runs outside autocast. Predictions from a
+        # bf16-mixed model and cached targets may have different dtypes, and
+        # CPU einsum requires them to match. Compute ranks in float32.
+        x, y = x.float(), y.float()
         if norm_kind is None:
-            eq, inv_norms = "b", torch.ones(x.shape[0])
+            eq, inv_norms = "b", torch.ones(x.shape[0], device=x.device)
         elif norm_kind == "x":
             eq, inv_norms = "b", 1 / (eps + x.norm(dim=(1), p=2))
         elif norm_kind == "y":

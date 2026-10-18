@@ -15,6 +15,7 @@ from neuralbench.registry import (
 )
 from neuralbench.plots._constants import MODEL_DISPLAY_NAMES, MEEG_CLASSIC_DISPLAY
 from neuralbench.utils import load_checkpoint
+from neuraltrain.models.llama32_eeg import _parse_multilabel_json
 
 
 class _AdapterModel(nn.Module):
@@ -92,3 +93,26 @@ def test_llama32_is_in_eeg_baseline_selection_and_result_display():
     display = MODEL_DISPLAY_NAMES["Llama32EEG"]
     assert display == "Llama 3.2 3B + EEG"
     assert display in MEEG_CLASSIC_DISPLAY
+
+
+def test_generative_tuev_config_uses_existing_multilabel_evaluation():
+    config = build_experiment_configs(
+        "eeg", "clinical_event", model="llama32_generate", debug=True
+    )[0]
+    assert config["brain_model_config"]["name"] == "Llama32EEGGenerate"
+    assert config["loss"]["name"] == "BCEWithLogitsLoss"
+    assert config["brain_model_output_size"] == 6
+    assert config["trainer_config"]["limit_test_batches"] == 5
+    assert config["save_test_predictions"] is True
+    assert "llama32_generate" not in _expand_models("all", device="eeg")
+    assert MODEL_DISPLAY_NAMES["Llama32EEGGenerate"] != MODEL_DISPLAY_NAMES["Llama32EEG"]
+
+
+def test_generated_tuev_event_list_is_strictly_multilabel():
+    labels = ["artf", "bckg", "eyem", "gped", "pled", "spsw"]
+    assert _parse_multilabel_json('["spsw", "artf"]', labels) == (
+        [1.0, 0.0, 0.0, 0.0, 0.0, 1.0], True
+    )
+    assert _parse_multilabel_json("[]", labels) == ([0.0] * 6, True)
+    for invalid in ('["artf", "artf"]', '["unknown"]', 'artf', '["artf"] extra'):
+        assert _parse_multilabel_json(invalid, labels) == ([0.0] * 6, False)

@@ -80,7 +80,9 @@ def _apply_debug_overlay(config: ConfDict) -> None:
         }
         # The 3B Llama smoke otherwise tests thousands of windows even in
         # debug mode. Keep full test evaluation for every production run.
-        if config.get("brain_model_config", {}).get("name") == "Llama32EEG":
+        if config.get("brain_model_config", {}).get("name") in {
+            "Llama32EEG", "Llama32EEGGenerate"
+        }:
             config["trainer_config.limit_test_batches"] = 5
         config["lightning_optimizer_config.scheduler"] = None
         config["data.num_workers"] = 0

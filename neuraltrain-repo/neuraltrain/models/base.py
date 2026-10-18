@@ -56,6 +56,8 @@ class BrainModelBuildContext:
         surface models such as :class:`SiTConfig`.  ``None`` otherwise.
     task_name : str or None
         Benchmark task used by models with task-specific instructions.
+    target_labels : list of str or None
+        Ordered class names from a prepared label extractor, when available.
 
     Notes
     -----
@@ -71,6 +73,7 @@ class BrainModelBuildContext:
     ch_names: list[str] | None = None
     mesh: str | None = None
     task_name: str | None = None
+    target_labels: list[str] | None = None
 
     def __post_init__(self) -> None:
         # Channel names, when present, must line up with the spatial axis -- a

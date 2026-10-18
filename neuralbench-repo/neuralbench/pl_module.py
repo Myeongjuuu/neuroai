@@ -194,7 +194,22 @@ class BrainModule(pl.LightningModule):
             "sync_dist": self.trainer.world_size > 1,
         }
 
-        y_pred = self.model_forward(batch)
+        generative_step = getattr(self.model, "generative_step", None)
+        if generative_step is not None:
+            if not isinstance(self.loss, nn.BCEWithLogitsLoss):
+                raise ValueError("Generative event evaluation requires multilabel BCE targets")
+            y_pred, language_loss, invalid_fraction = generative_step(
+                **self._forward_inputs(batch), targets=y_true, stage=step_name
+            )
+            self.log(f"{step_name}/lm_loss", language_loss, **log_kwargs)
+            if invalid_fraction is not None:
+                self.log(
+                    f"{step_name}/invalid_generation_fraction",
+                    invalid_fraction,
+                    **log_kwargs,
+                )
+        else:
+            y_pred = self.model_forward(batch)
 
         metric_pred, metric_true = y_pred, y_true
         loss_pred, loss_true = y_pred, y_true
@@ -227,7 +242,11 @@ class BrainModule(pl.LightningModule):
             y_pred = y_pred.reshape(y_pred.shape[0], -1)
             y_true = y_true.reshape(y_true.shape[0], -1)
 
-        if isinstance(self.loss, nn.CTCLoss):
+        if generative_step is not None:
+            # Validation metrics use freely generated event lists. The
+            # teacher-forced language loss is only the training objective.
+            loss = language_loss
+        elif isinstance(self.loss, nn.CTCLoss):
             # ``nn.CTCLoss`` needs four arguments and a transposed time axis.
             # ``y_pred`` is ``(B, T_out, C)`` log-probs from a CTC head;
             # ``y_true`` is ``(B, max_length)`` integer labels padded with

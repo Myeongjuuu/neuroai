@@ -170,6 +170,12 @@ def build_brain_model(
         n_outputs = feat.shape[1]
     else:
         n_outputs = feat.shape[-1]
+    target_labels: list[str] | None = None
+    label_to_ind = getattr(leaf, "_label_to_ind", None)
+    if label_to_ind:
+        ordered = {idx: label for label, idx in label_to_ind.items() if idx >= 0}
+        if set(ordered) == set(range(n_outputs)):
+            target_labels = [ordered[idx] for idx in range(n_outputs)]
 
     # Derive sampling rate / channel names from the neuro extractor so models
     # that need them (frequency: Green/FreqBandNet/CoSpectra; ch_names:
@@ -271,6 +277,7 @@ def build_brain_model(
             ch_names=ch_names,
             mesh=mesh,
             task_name=task_name,
+            target_labels=target_labels,
             ctc_blank_idx=ctc_blank_idx,
             load_targets=_load_targets,
             load_neuro_targets=_load_neuro_targets,
@@ -284,6 +291,7 @@ def build_brain_model(
             ch_names=ch_names,
             mesh=mesh,
             task_name=task_name,
+            target_labels=target_labels,
         )
     brain_model = brain_model_config.build_from_context(ctx)
 

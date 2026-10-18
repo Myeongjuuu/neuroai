@@ -89,6 +89,28 @@ class BrainModule(pl.LightningModule):
                 split_names=["test/full_retrieval"],
             )
 
+    def on_save_checkpoint(self, checkpoint: dict[str, tp.Any]) -> None:
+        """Store only trainable EEG weights for externally loaded frozen LLMs."""
+        if getattr(self.model, "omit_frozen_backbone_from_checkpoint", False):
+            state = checkpoint["state_dict"]
+            for key in list(state):
+                if key.startswith("model.llama."):
+                    del state[key]
+
+    def load_state_dict(
+        self, state_dict: tp.Mapping[str, tp.Any], strict: bool = True
+    ) -> tp.Any:
+        if not getattr(self.model, "omit_frozen_backbone_from_checkpoint", False):
+            return super().load_state_dict(state_dict, strict=strict)
+        result = super().load_state_dict(state_dict, strict=False)
+        missing = [k for k in result.missing_keys if not k.startswith("model.llama.")]
+        if strict and (missing or result.unexpected_keys):
+            raise RuntimeError(
+                "Invalid EEG adapter checkpoint: "
+                f"missing={missing}, unexpected={result.unexpected_keys}"
+            )
+        return result
+
     def _infer_forward_params(self, model: nn.Module) -> None:
         """Check which additional inputs the model's forward method requires."""
         inner_model = model

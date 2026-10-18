@@ -295,6 +295,16 @@ def prepare_task_configs(
             exp_config.update(model_config)
 
         for dataset_name in datasets:
+            if model == "llama32" and (
+                device != "eeg"
+                or task_name != "mental_arithmetic"
+                or dataset_name is not None
+            ):
+                raise ValueError(
+                    "llama32 currently supports only the default EEG "
+                    "mental_arithmetic dataset; its prompt and A/B targets "
+                    "are specific to that label mapping."
+                )
             dataset_exp_config = exp_config.copy()
             if dataset_name is not None:
                 if not quiet:

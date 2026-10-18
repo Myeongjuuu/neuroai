@@ -48,6 +48,8 @@ data:
     aggregation: sum
     allow_missing: true
   trigger_event_type: [EpileptiformActivity, Artifact]
+  # One window per onset; preserve all coincident events for the 6-label target.
+  trigger_collision_policy: unique_start
   start: -1.0
   duration: 3.0
   stride: 1.0

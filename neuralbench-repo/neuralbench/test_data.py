@@ -40,9 +40,30 @@ def test_unique_start_triggers_preserve_coincident_multilabel_events():
     events = ns.events.standardize_events(
         pd.DataFrame(
             [
-                dict(type="Word", start=1.0, duration=0.5, timeline="x", split="train", text="A"),
-                dict(type="Word", start=1.0, duration=0.5, timeline="x", split="train", text="B"),
-                dict(type="Word", start=2.0, duration=0.5, timeline="x", split="train", text="C"),
+                dict(
+                    type="Word",
+                    start=1.0,
+                    duration=0.5,
+                    timeline="x",
+                    split="train",
+                    text="A",
+                ),
+                dict(
+                    type="Word",
+                    start=1.0,
+                    duration=0.5,
+                    timeline="x",
+                    split="train",
+                    text="B",
+                ),
+                dict(
+                    type="Word",
+                    start=2.0,
+                    duration=0.5,
+                    timeline="x",
+                    split="train",
+                    text="C",
+                ),
             ]
         )
     )
@@ -51,6 +72,23 @@ def test_unique_start_triggers_preserve_coincident_multilabel_events():
     segments = ns.segments.list_segments(events, triggers=selected, duration=1.0)
     assert len(segments) == 2
     assert set(segments[0].events.text) == {"A", "B"}
+
+
+def test_split_batch_size_and_shuffle(build_data):
+    loaders = build_data(
+        seed=33,
+        val_batch_size=1,
+        test_batch_size=2,
+        train_shuffle=False,
+        test_shuffle=True,
+    ).prepare()
+    splits = ("train", "val", "test")
+    assert [loaders[split].batch_size for split in splits] == [4, 1, 2]
+    shuffled = [
+        isinstance(loaders[split].sampler, torch.utils.data.RandomSampler)
+        for split in splits
+    ]
+    assert shuffled == [False, False, True]
 
 
 def _train_indices(loaders: dict[str, DataLoader]) -> list[int]:

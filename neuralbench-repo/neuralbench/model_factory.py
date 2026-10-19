@@ -12,6 +12,7 @@ lifecycle class focused on orchestration.
 
 import inspect
 import logging
+import math
 import typing as tp
 
 import torch
@@ -37,6 +38,25 @@ from .utils import (
 )
 
 LOGGER = logging.getLogger(__name__)
+
+
+def _infer_neuro_shape(neuro: torch.Tensor) -> tuple[int, int]:
+    """Return spatial location count and temporal length without reshaping data."""
+    if neuro.ndim < 3:
+        raise ValueError(
+            "Neuro tensors must have batch, spatial, and temporal axes; "
+            f"got shape {tuple(neuro.shape)}."
+        )
+    spatial_shape = tuple(neuro.shape[1:-1])
+    n_spatial_locations = math.prod(spatial_shape)
+    if len(spatial_shape) > 1:
+        LOGGER.info(
+            "Treating multidimensional spatial shape %s as %d locations "
+            "for model construction; input tensor remains unflattened.",
+            spatial_shape,
+            n_spatial_locations,
+        )
+    return n_spatial_locations, int(neuro.shape[-1])
 
 
 def build_dummy_batch(
@@ -72,6 +92,22 @@ def build_dummy_batch(
             )
         if "subject_ids" not in dummy_batch:
             dummy_batch["subject_ids"] = batch.data["subject_id"][:1].to("cpu")
+
+    # The preprocessor runs first in ``DownstreamWrapperModel.forward`` and may
+    # resize the input (``min_temporal_samples``), so both the lazy-layer init
+    # and the wrapper's output-shape probe have to see its output.
+    if (
+        downstream_model_wrapper is not None
+        and downstream_model_wrapper.on_the_fly_preprocessor is not None
+    ):
+        preprocessor = downstream_model_wrapper.on_the_fly_preprocessor.build()
+        with torch.no_grad():
+            x, ch_pos = preprocessor(
+                dummy_batch[input_name], dummy_batch.get("channel_positions")
+            )
+        dummy_batch[input_name] = x
+        if ch_pos is not None and "channel_positions" in dummy_batch:
+            dummy_batch["channel_positions"] = ch_pos
 
     return dummy_batch, input_name
 
@@ -144,8 +180,9 @@ def build_brain_model(
     models that read channel identity by name rather than by position.
     """
     batch = next(iter(train_loader))
-    n_spatial_locations, n_temporal_samples = batch.data["neuro"].shape[1:]
-    LOGGER.info(f"Neuro shape: {batch.data['neuro'].shape}")
+    neuro = batch.data["neuro"]
+    n_spatial_locations, n_temporal_samples = _infer_neuro_shape(neuro)
+    LOGGER.info(f"Neuro shape: {neuro.shape}")
     LOGGER.info(f"Target shape: {batch.data['target'].shape}")
 
     feat = batch.data["target"]
@@ -190,6 +227,16 @@ def build_brain_model(
             frequency = float(freq)
         if hasattr(neuro_extractor, "_channels"):
             ch_names = list(neuro_extractor._channels.keys())
+            # Some extractors may fold a second axis into the spatial one (e.g.
+            # channel x frequency flattening for spectrogram extractors
+            if len(ch_names) != n_spatial_locations:
+                LOGGER.warning(
+                    "Neuro extractor names %d channels but the spatial axis is %d "
+                    "wide; dropping channel names.",
+                    len(ch_names),
+                    n_spatial_locations,
+                )
+                ch_names = None
         # Surface-sampled data (e.g. fMRI on fsaverage) exposes a mesh
         # resolution that surface models need; carry its enum name as a string.
         mesh_attr = getattr(neuro_extractor, "mesh_resolution", None)
@@ -333,7 +380,9 @@ def build_brain_model(
     else:
         model_summary = summary(
             brain_model,
-            input_data={k: v for k, v in dummy_batch.items() if isinstance(v, torch.Tensor)},
+            input_data={
+                k: v for k, v in dummy_batch.items() if isinstance(v, torch.Tensor)
+            },
             **{k: v for k, v in dummy_batch.items() if not isinstance(v, torch.Tensor)},
             col_names=("output_size", "num_params", "trainable"),
             row_settings=("hide_recursive_layers",),

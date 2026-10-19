@@ -4,7 +4,7 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
-"""Adaptation-strategy comparison plot for the ``adaptation/`` output group.
+"""Adaptation-strategy comparison plot for the ``core/all_strategies/`` outputs.
 
 :func:`plot_adaptation_comparison` answers "for each foundation model and task,
 which adaptation strategy wins, and by how much?".  It is a no-op unless the
@@ -27,6 +27,7 @@ from neuralbench.plots._constants import (
     MEEG_FM_DISPLAY,
     TASK_DISPLAY_NAMES,
     AdaptationMode,
+    eval_mode_label,
 )
 from neuralbench.plots._style import save_figure
 from neuralbench.plots.tables import eval_mode_suffix
@@ -34,26 +35,8 @@ from neuralbench.plots.tables import eval_mode_suffix
 LOGGER = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Labels and colours for eval-mode tags (tag parsing lives in ``_constants``)
+# Colours for eval-mode tags (tag parsing and labels live in ``_constants``)
 # ---------------------------------------------------------------------------
-
-_STRATEGY_LABEL: dict[str, str] = {
-    "linear_probe": "Linear Probe",
-    "attentive_probe": "Attentive Probe",
-    "finetune": "Full FT",
-}
-
-
-def eval_mode_label(tag: str) -> str:
-    """Human-readable label for an ``eval_mode`` tag (``"lora_r8"`` -> ``"LoRA r8"``)."""
-    mode = AdaptationMode.parse(tag)
-    if mode.is_lora:
-        label = f"LoRA r{mode.lora_rank}"
-    elif mode.strategy in _STRATEGY_LABEL:
-        label = _STRATEGY_LABEL[mode.strategy]
-    else:
-        return tag
-    return f"{label} ({mode.aggregation})" if mode.aggregation else label
 
 
 def order_modes(modes: list[str]) -> list[str]:

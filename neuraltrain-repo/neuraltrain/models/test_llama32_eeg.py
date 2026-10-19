@@ -1,8 +1,8 @@
 """Small model test without downloading a gated Llama checkpoint."""
 
+import pytest
 import torch
 from torch import nn
-import pytest
 
 pytest.importorskip("transformers")
 
@@ -47,8 +47,7 @@ def test_llama32_eeg_output_width_and_gradients(monkeypatch, n_outputs):
         transformers.AutoTokenizer, "from_pretrained", lambda *a, **k: _Tokenizer()
     )
     monkeypatch.setattr(
-        transformers.AutoModel,
-        "from_pretrained", lambda *a, **k: _LanguageModel()
+        transformers.AutoModel, "from_pretrained", lambda *a, **k: _LanguageModel()
     )
     model = Llama32EEGModel(
         n_channels=3,
@@ -131,7 +130,9 @@ def test_llama32_with_tiny_huggingface_llama(monkeypatch):
     assert all(p.grad is None for p in model.llama.parameters())
 
 
-@pytest.mark.parametrize("task_kind", ["classification", "multilabel", "regression", "retrieval"])
+@pytest.mark.parametrize(
+    "task_kind", ["classification", "multilabel", "regression", "retrieval"]
+)
 def test_llama32_trains_with_neuralbench_eeg_losses(monkeypatch, task_kind):
     import transformers
 
@@ -157,7 +158,9 @@ def test_llama32_trains_with_neuralbench_eeg_losses(monkeypatch, task_kind):
     if task_kind == "classification":
         loss = nn.CrossEntropyLoss()(predictions, torch.eye(width)[:2])
     elif task_kind == "multilabel":
-        loss = nn.BCEWithLogitsLoss()(predictions, torch.randint(0, 2, predictions.shape).float())
+        loss = nn.BCEWithLogitsLoss()(
+            predictions, torch.randint(0, 2, predictions.shape).float()
+        )
     elif task_kind == "regression":
         loss = nn.MSELoss()(predictions, torch.randn_like(predictions))
     else:

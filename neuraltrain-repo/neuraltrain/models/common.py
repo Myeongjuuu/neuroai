@@ -16,9 +16,11 @@ import torch
 from torch import nn
 from torchvision.ops import MLP
 
-from neuraltrain.models.base import BaseModelConfig
+from . import base as model_base
 
 INVALID_POS_VALUE = -0.1  # See ns.extractors.ChannelPositions.INVALID_VALUE
+
+_T = tp.TypeVar("_T")
 
 
 def parse_bipolar_name(name: str) -> tuple[str, str] | None:
@@ -32,6 +34,30 @@ def parse_bipolar_name(name: str) -> tuple[str, str] | None:
     if len(parts) == 2 and parts[0] and parts[1]:
         return parts[0], parts[1]
     return None
+
+
+def resolve_with_anode_fallback(
+    name: str,
+    lookup: tp.Callable[[str], _T | None],
+) -> tuple[_T | None, bool]:
+    """Resolve *name* through *lookup*, retrying with the anode if it fails.
+
+    Shared by the EEG foundation-model wrappers (LaBraM, REVE):
+    bipolar names (CHB-MIT, SleepEDF) are absent from every model vocabulary,
+    so the anode stands in for the pair.  *lookup* owns the vocabulary and the
+    case policy and returns ``None`` for an unknown name.
+
+    Returns ``(value, used_anode)``, where *used_anode* is ``True`` only when
+    the value was resolved from the anode rather than from *name* itself.
+    """
+    value = lookup(name)
+    if value is not None:
+        return value, False
+    pair = parse_bipolar_name(name)
+    if pair is None:
+        return None, False
+    anode_value = lookup(pair[0])
+    return anode_value, anode_value is not None
 
 
 def compute_temporal_adjustment(n_times: int, patch_size: int) -> tuple[int, int]:
@@ -131,7 +157,7 @@ class ChannelDropout(nn.Module):
         raise NotImplementedError
 
 
-class SubjectLayers(BaseModelConfig):
+class SubjectLayers(model_base.BaseModelConfig):
     """Configuration for per-subject linear projections.
 
     Parameters
@@ -297,7 +323,7 @@ class SubjectLayersModel(nn.Module):
         return f"SubjectLayersModel({C}, {D}, {S})"
 
 
-class FourierEmb(BaseModelConfig):
+class FourierEmb(model_base.BaseModelConfig):
     """Configuration for Fourier positional embedding.
 
     Parameters
@@ -410,7 +436,7 @@ class FourierEmbModel(nn.Module):
         return emb
 
 
-class ChannelMerger(BaseModelConfig):
+class ChannelMerger(model_base.BaseBrainModelConfig):
     """Configuration for the ChannelMerger module.
 
     Parameters
@@ -664,7 +690,7 @@ class NormDenormScaler(nn.Module):
         return self.scaler(x)
 
 
-class Mlp(BaseModelConfig):
+class Mlp(model_base.BaseModelConfig):
     """Multilayer perceptron, e.g. for use as projection head.
 
     Notes
@@ -730,7 +756,7 @@ class Mlp(BaseModelConfig):
         )
 
 
-class TemporalDownsampling(BaseModelConfig):
+class TemporalDownsampling(model_base.BaseModelConfig):
     """Temporal downsampling via a 2-D convolution over the time axis.
 
     Parameters

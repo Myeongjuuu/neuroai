@@ -5,15 +5,15 @@ import logging
 import torch
 from torch import nn
 
-from neuralbench.pl_module import BrainModule
 from neuralbench.experiment_config import build_experiment_configs
+from neuralbench.pl_module import BrainModule
+from neuralbench.plots._constants import MEEG_CLASSIC_DISPLAY, MODEL_DISPLAY_NAMES
 from neuralbench.registry import (
     CLASSIC_MODELS,
     DEVICE_CLASSIC_MODELS,
     TASKS,
     _expand_models,
 )
-from neuralbench.plots._constants import MODEL_DISPLAY_NAMES, MEEG_CLASSIC_DISPLAY
 from neuralbench.utils import load_checkpoint
 from neuraltrain.models.llama32_eeg import _parse_multilabel_json
 
@@ -73,9 +73,7 @@ def test_llama_adapter_checkpoint_loads_through_standard_model_path(tmp_path):
 def test_llama32_config_assembles_for_every_eeg_task():
     configs = build_experiment_configs("eeg", "all", model="llama32", debug=True)
     assert {config["task_name"] for config in configs} == set(TASKS["eeg"])
-    assert all(
-        config["brain_model_config"]["name"] == "Llama32EEG" for config in configs
-    )
+    assert all(config["brain_model_config"]["name"] == "Llama32EEG" for config in configs)
     assert all(config["data"]["batch_size"] == 2 for config in configs)
     assert all(config["trainer_config"]["limit_test_batches"] == 5 for config in configs)
     variant = build_experiment_configs(
@@ -111,8 +109,9 @@ def test_generative_tuev_config_uses_existing_multilabel_evaluation():
 def test_generated_tuev_event_list_is_strictly_multilabel():
     labels = ["artf", "bckg", "eyem", "gped", "pled", "spsw"]
     assert _parse_multilabel_json('["spsw", "artf"]', labels) == (
-        [1.0, 0.0, 0.0, 0.0, 0.0, 1.0], True
+        [1.0, 0.0, 0.0, 0.0, 0.0, 1.0],
+        True,
     )
     assert _parse_multilabel_json("[]", labels) == ([0.0] * 6, True)
-    for invalid in ('["artf", "artf"]', '["unknown"]', 'artf', '["artf"] extra'):
+    for invalid in ('["artf", "artf"]', '["unknown"]', "artf", '["artf"] extra'):
         assert _parse_multilabel_json(invalid, labels) == ([0.0] * 6, False)

@@ -4,6 +4,8 @@
 # This source code is licensed under the license found in the
 # LICENSE file in the root directory of this source tree.
 
+import contextlib
+import difflib
 import functools
 import importlib.metadata
 import logging
@@ -77,7 +79,8 @@ def _set_dir_permissions(path: Path) -> None:
                     skipped += 1
                     continue
                 os.chmod(item, 0o777)
-            except PermissionError:
+            # FileNotFoundError for broken symlinks: partial Datalad download
+            except (PermissionError, FileNotFoundError):
                 logger.debug("Cannot chmod %s (not owner), skipping.", item)
                 skipped += 1
     if skipped:
@@ -89,8 +92,9 @@ def _scan_package_for_studies(base_dir: Path, base_module: str, name: str) -> No
     """Scan a package directory tree for study modules and import those
     that may define a class matching *name*.
 
-    When *name* is empty (called from :meth:`Study.catalog`), every non-test
-    module is imported so that all ``__init_subclass__`` registrations fire.
+    When *name* is empty, every non-test module is imported so that all
+    ``__init_subclass__`` registrations fire (:meth:`Study.catalog`, and the
+    close-match suggestions of a failed lookup).
 
     Matches class definitions (``class Name``), module-level aliases
     (``Name =``), and string literals (``"Name"``).
@@ -149,9 +153,13 @@ def _resolve_study(name: str = "") -> tp.Type["Study"] | None:
         hint = "import the module that defines it before use"
         if importlib.util.find_spec("neuralfetch") is None:
             hint = f"run `pip install neuralfetch` for public-data studies, or {hint}"
-        raise ImportError(
-            f"Study or EventsTransform {name!r} not found (scanned: {scanned}), {hint}."
-        )
+        with contextlib.suppress(Exception):
+            _resolve_study()  # full scan, so close matches cover unimported studies
+        known = set(STUDIES) | set(base.Step._get_discriminated_subclasses())
+        close = difflib.get_close_matches(name, sorted(known), n=5)
+        near = f" Did you mean: {', '.join(close)}?" if close else ""
+        msg = f"{name!r} not found (scanned: {scanned}), {hint}."
+        raise ImportError(f"{msg}{near} Study.catalog() lists all studies.")
     return cls
 
 
@@ -283,7 +291,8 @@ class Study(patterns.Scatter, base.Step):  # type: ignore[misc]
     version : str
         Cache-busting key kept in the uid; bump when loading logic changes.
     query : Query or None
-        Optional filter applied after loading (e.g. ``"timeline_index < 5"``).
+        Optional timeline selection, applied before loading (e.g.
+        ``"timeline_index < 5"``); filter loaded rows with ``QueryEvents``.
 
     Examples
     --------

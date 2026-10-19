@@ -26,11 +26,12 @@ def _assign_bins(targets: torch.Tensor, bin_edges: Sequence[float]) -> torch.Ten
 
     Out-of-range targets land in the end bins; callers mask them separately.
     """
-    inner_edges = torch.as_tensor(
-        list(bin_edges)[1:-1], device=targets.device, dtype=targets.dtype
-    )
-    # `right` is inverted w.r.t. numpy.searchsorted's `side`: right=True gives [lo, hi).
-    return torch.bucketize(targets, inner_edges, right=True)
+    # Compared against Python floats: an edge tensor would be a blocking
+    # host-to-device copy on every metric update.
+    bins = torch.zeros_like(targets, dtype=torch.long)
+    for edge in list(bin_edges)[1:-1]:
+        bins += targets >= edge
+    return bins
 
 
 class BinnedMAE(torchmetrics.Metric):
@@ -38,7 +39,8 @@ class BinnedMAE(torchmetrics.Metric):
 
     Targets are partitioned into bins defined by ``bin_boundaries`` and the
     mean absolute error is computed inside each bin. The reported value is the
-    unweighted mean of per-bin MAEs across non-empty bins.
+    mean of per-bin MAEs across non-empty bins, weighted by ``bin_weights``
+    (W-bMAE) when given: ``sum(w * mae) / sum(w)`` over non-empty bins.
 
     Targets falling exactly on the upper boundary of the last bin are included
     in that bin (so the cap value of ``cap_s`` falls in the last bin); other
@@ -49,6 +51,8 @@ class BinnedMAE(torchmetrics.Metric):
     bin_boundaries : list of float, optional
         Strictly increasing list of ``n + 1`` floats defining ``n`` bins.
         Defaults to ``[0.0, 40.0, 90.0, 300.0, 600.0]``.
+    bin_weights : list of float, optional
+        One positive weight per bin. Defaults to equal weights.
     """
 
     higher_is_better: bool = False
@@ -58,7 +62,11 @@ class BinnedMAE(torchmetrics.Metric):
     sum_abs_err: torch.Tensor
     count: torch.Tensor
 
-    def __init__(self, bin_boundaries: list[float] | None = None) -> None:
+    def __init__(
+        self,
+        bin_boundaries: list[float] | None = None,
+        bin_weights: list[float] | None = None,
+    ) -> None:
         super().__init__()
         boundaries = (
             list(bin_boundaries)
@@ -75,6 +83,13 @@ class BinnedMAE(torchmetrics.Metric):
             )
         self.bin_boundaries = boundaries
         n_bins = len(boundaries) - 1
+        weights = [1.0] * n_bins if bin_weights is None else list(bin_weights)
+        if len(weights) != n_bins or any(w <= 0 for w in weights):
+            raise ValueError(
+                f"`bin_weights` must hold {n_bins} positive values, one per bin; "
+                f"got {bin_weights!r}"
+            )
+        self.bin_weights = weights
         self.add_state(
             "sum_abs_err",
             default=torch.zeros(n_bins, dtype=torch.float64),
@@ -91,17 +106,21 @@ class BinnedMAE(torchmetrics.Metric):
         e = (preds.flatten().to(self.sum_abs_err.dtype) - t).abs()
         bin_idx = _assign_bins(t, self.bin_boundaries)
         in_range = (t >= self.bin_boundaries[0]) & (t <= self.bin_boundaries[-1])
-
-        if in_range.any():
-            self.sum_abs_err.scatter_add_(0, bin_idx[in_range], e[in_range])
-            self.count.scatter_add_(0, bin_idx[in_range], torch.ones_like(e[in_range]))
+        # Masked by value, not by index: boolean indexing syncs the GPU.
+        self.sum_abs_err.scatter_add_(0, bin_idx, torch.where(in_range, e, 0.0))
+        self.count.scatter_add_(0, bin_idx, in_range.to(self.count.dtype))
 
     def compute(self) -> torch.Tensor:
         nonempty = self.count > 0
         if not bool(nonempty.any()):
             return torch.tensor(float("nan"), device=self.sum_abs_err.device)
         per_bin = self.sum_abs_err / self.count.clamp(min=1)
-        return per_bin[nonempty].mean().to(torch.float32)
+        weights = torch.tensor(
+            self.bin_weights, dtype=per_bin.dtype, device=per_bin.device
+        )
+        weights = weights[nonempty]
+        weighted = (weights * per_bin[nonempty]).sum() / weights.sum()
+        return weighted.to(torch.float32)
 
 
 _BinnedMAEConfig = convert_to_pydantic(

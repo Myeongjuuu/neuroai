@@ -28,7 +28,7 @@ from .text import HuggingFaceText
 logger = logging.getLogger(__name__)
 
 
-class TimeAggregatedExtractor(base.BaseStatic):
+class TimeAggregatedExtractor(base.BaseExtractor):
     """Remove the time dimension of a dynamic extractor, either by summing/averaging or by
     selecting the first, middle or last time point.
 
@@ -52,6 +52,9 @@ class TimeAggregatedExtractor(base.BaseStatic):
     n_groups_concat: pydantic.PositiveInt | None = None
     event_types: str | tuple[str, ...] = "Event"
     extractor: base.BaseExtractor
+
+    def _is_static(self) -> bool:
+        return True
 
     def model_post_init(self, log__: tp.Any) -> None:
         self.event_types = self.extractor.event_types
@@ -113,18 +116,21 @@ class AggregatedExtractor(base.BaseExtractor):
     event_types: str | tuple[str, ...] = "Event"
     extractors: list[base.BaseExtractor]
     extractor_aggregation: tp.Literal["cat", "stack", "mean", "sum"] = "cat"
-    frequency: tp.Literal["native"] = "native"  # deferred to sub-extractors
+    frequency: float | tp.Literal["native"] = "native"  # deferred to sub-extractors
 
     def model_post_init(self, log__: tp.Any) -> None:
-        """Check that extractors are all static or all dynamic."""
+        """Check stream compatibility and propagate the common frequency."""
         fts = self.extractors
-        static_count = sum(isinstance(f, base.BaseStatic) for f in fts)
-        if static_count not in [0, len(fts)]:
+        # BaseStatic extractors become temporal streams when configured with a
+        # non-zero frequency, so classify by frequency rather than inheritance.
+        static_count = sum(f.frequency == 0 for f in fts)
+        if static_count not in (0, len(fts)):
             raise ValueError("Extractors must be either all static or all dynamic.")
-        if not static_count:  # dynamic
-            frequencies = set(f.frequency for f in self.extractors)
+        frequencies = {f.frequency for f in fts}
+        if not static_count:
             if len(frequencies) > 1:
                 raise ValueError("All extractors must have the same frequency.")
+            self.frequency = frequencies.pop()
         all_event_types = set(c for f in fts for c in f._event_types_helper.classes)
         self.event_types = tuple(c.__name__ for c in all_event_types)
         super().model_post_init(log__)
@@ -173,8 +179,9 @@ class ExtractorPCA(base.BaseStatic):
         super().model_post_init(log__)
         if self.infra.cluster is not None:
             raise ValueError(f"Cannot use a cluster on {self!r}")
-        if not isinstance(self.extractor, base.BaseStatic):
-            raise NotImplementedError("Cannot handle non-static extractors for now")
+        if self.extractor.frequency != 0:
+            msg = "Cannot handle extractors with a time axis (frequency != 0) for now"
+            raise NotImplementedError(msg)
         if not hasattr(self.extractor, "infra"):
             raise NotImplementedError("Cannot handle extractor with no infra")
         if self.infra.folder is None:
@@ -233,7 +240,7 @@ class ExtractorPCA(base.BaseStatic):
             raise RuntimeError("Something went wrong")
         # write to cache
         done = set()
-        with self.infra.cache_dict.writer() as w:
+        with self.infra.cache_dict.write() as w:
             for i_uid, d in zip(pca_events, pca_data):
                 if i_uid not in done:
                     w[i_uid] = d
@@ -352,7 +359,7 @@ class HuggingFacePCA(ExtractorPCA):
             raise RuntimeError("Something went wrong")
         # write to cache
         done = set()
-        with self.infra.cache_dict.writer() as w:
+        with self.infra.cache_dict.write() as w:
             for i_uid, d in zip(pca_events, pca_embds):
                 if i_uid not in done:
                     w[i_uid] = d
@@ -377,7 +384,7 @@ class HuggingFacePCA(ExtractorPCA):
             )
 
 
-class CroppedExtractor(base.BaseStatic):  # can be static or not
+class CroppedExtractor(base.BaseExtractor):  # can be static or not
     """Crop a extractor to a given offset and duration.
 
     Parameters
@@ -401,6 +408,9 @@ class CroppedExtractor(base.BaseStatic):  # can be static or not
     # a float for static extractors), so the annotation must permit floats too
     # for the dump/validate round-trip in ``infra.clone_obj`` to succeed.
     frequency: float | tp.Literal["native"] = "native"  # type: ignore
+
+    def _is_static(self) -> bool:
+        return self.extractor._is_static()
 
     def model_post_init(self, log__: tp.Any) -> None:
         self.event_types = self.extractor.event_types
@@ -429,7 +439,7 @@ class CroppedExtractor(base.BaseStatic):  # can be static or not
         self.extractor.prepare(obj)
 
 
-class ToStatic(base.BaseStatic):
+class ToStatic(base.BaseExtractor):
     """
     Crop a extractor by a given offset and duration.
 
@@ -441,12 +451,19 @@ class ToStatic(base.BaseStatic):
 
     extractor: base.BaseExtractor
     event_types: str | tuple[str, ...] = "Event"
-    frequency: pydantic.PositiveFloat = 0.0
+    frequency: float = 0.0
     aggregation: tp.Literal["trigger"] = "trigger"
 
+    def _is_static(self) -> bool:
+        return True
+
     def model_post_init(self, context: tp.Any) -> None:
-        if isinstance(self.extractor, base.BaseStatic):
-            raise ValueError("ToStatic cannot crop a static extractor as it is timeless.")
+        if self.frequency != 0:
+            name = self.__class__.__name__
+            raise ValueError(f"{name}.frequency must be 0")
+        if self.extractor.frequency == 0:
+            msg = "ToStatic cannot wrap an extractor with no time axis (frequency=0)."
+            raise ValueError(msg)
         if self.extractor.aggregation != "single":
             raise NotImplementedError(
                 f"ToStatic only accept extractor with `single` aggregation, got {self.extractor.aggregation}"

@@ -38,14 +38,17 @@ def _infer_eval_mode(experiment: "Experiment") -> str:
     if wrapper is None:
         return AdaptationMode("finetune").tag
     aggregation = "" if wrapper.aggregation is None else str(wrapper.aggregation)
+    pooling = "attentive" if wrapper.probe_config == "attention" else aggregation
+    if wrapper.unfreeze_at_epoch is not None:
+        return AdaptationMode("lpft", pooling).tag
     if wrapper.lora_config is not None:
-        return AdaptationMode("lora", aggregation, wrapper.lora_config.r).tag
+        return AdaptationMode("lora", pooling, wrapper.lora_config.r).tag
     if wrapper.layers_to_unfreeze == [""]:
         strategy = (
             "attentive_probe" if wrapper.probe_config == "attention" else "linear_probe"
         )
         return AdaptationMode(strategy, aggregation).tag
-    return AdaptationMode("finetune", aggregation).tag
+    return AdaptationMode("finetune", pooling).tag
 
 
 def _default_output_dir() -> str:
@@ -117,6 +120,8 @@ class BenchmarkAggregator(ns.BaseModel):
     debug: bool = False
 
     output_dir: str = Field(default_factory=_default_output_dir)
+    device: str | None = None
+    eval_mode: str | None = None  # tags every result, instead of inferring it per run
 
     # Each unique loss name picks one headline metric for plots/tables.  This
     # is a per-loss (not per-task) mapping: when two tasks would share a loss
@@ -128,7 +133,7 @@ class BenchmarkAggregator(ns.BaseModel):
         "MSELoss": "test/pearsonr",
         "L1Loss": "test/mae",  # currently emg/pose only
         "MultiLoss": "test/bmae",  # currently sleep-onset only
-        "ClipLoss": "test/full_retrieval/top5_acc_subject-agg",
+        "ClipLoss": "test/full_retrieval/inv_norm_rank_mean",
         "CTCLoss": "test/CER",  # currently emg/typing only
     }
 
@@ -189,6 +194,7 @@ class BenchmarkAggregator(ns.BaseModel):
             out["dataset_name"] = type(study[0]).__name__
         else:
             out["dataset_name"] = type(study).__name__
+        out["space_name"] = experiment.space_name
         out["brain_model_name"] = experiment.brain_model_name
         out["model_variant"] = _experiment_variant(experiment)
         out["loss"] = {"name": type(experiment.loss).__name__}
@@ -203,8 +209,13 @@ class BenchmarkAggregator(ns.BaseModel):
         loads), so experiments are processed in parallel using threads.
         """
         if cached_only:
-            return self._collect_results_parallel()
-        return self._collect_results_sequential(cached_only=False)
+            results = self._collect_results_parallel()
+        else:
+            results = self._collect_results_sequential(cached_only=False)
+        if self.eval_mode is not None:
+            for result in results:
+                result["eval_mode"] = self.eval_mode
+        return results
 
     def _tally(
         self, outcomes: tp.Iterable[tuple[dict[str, tp.Any] | None, str, str, str]]
@@ -249,6 +260,12 @@ class BenchmarkAggregator(ns.BaseModel):
                 )
             )
 
+    @property
+    def device_output_dir(self) -> Path:
+        """Root of this run's artefacts: ``output_dir/<device>``, or ``output_dir``."""
+        root = Path(self.output_dir)
+        return root if self.device is None else root / self.device
+
     def _save_computational_stats(self, results: list[dict[str, tp.Any]]) -> Path:
         """Write per-experiment computational stats to JSON for later analysis."""
         _COMP_KEYS = (
@@ -268,7 +285,7 @@ class BenchmarkAggregator(ns.BaseModel):
             }
             entry.update({k: r.get(k) for k in _COMP_KEYS})
             stats.append(entry)
-        out_path = Path(self.output_dir) / "other" / "computational_stats.json"
+        out_path = self.device_output_dir / "other" / "computational_stats.json"
         out_path.parent.mkdir(parents=True, exist_ok=True)
         with open(out_path, "w") as f:
             json.dump(stats, f, indent=2)
@@ -300,5 +317,5 @@ class BenchmarkAggregator(ns.BaseModel):
                 LOGGER.info("No results found. Nothing to plot.")
             return []
         self._save_computational_stats(results)
-        plot_all_results(results, self.loss_to_metric_mapping, self.output_dir)
+        plot_all_results(results, self.loss_to_metric_mapping, self.device_output_dir)
         return results

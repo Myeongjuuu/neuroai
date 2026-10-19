@@ -8,13 +8,15 @@ data:
   study:
     =replace=: true
     source:
-      name: Chang2019Bold5000
+      name: Alvarez2022Haaglanden
     split:
-      name: PredefinedSplit
-      test_split_query: null
-      col_name: split
-      valid_split_by: timeline
+      name: SklearnSplit
+      split_by: subject
       valid_split_ratio: 0.2
+      test_split_ratio: 0.2
       valid_random_state: 33
-  neuro:
-    from_space: auto
+      test_random_state: 33
+    annotate_sleep_onset:
+      name: AddSleepOnsetTargets
+      max_pre_n2_s: 1200.0
+      random_start_splits: [val, test]

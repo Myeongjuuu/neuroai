@@ -60,6 +60,67 @@ class LoraConfig(pydantic.BaseModel):
         )
 
 
+# TODO: delete through route_bypassed_qkv_lora once braindecode > 1.8.1 (braindecode#1194)
+class _AddDelta(nn.Module):
+    def __init__(self, delta: torch.Tensor) -> None:
+        super().__init__()
+        self.delta = delta
+
+    def forward(self, weight: torch.Tensor) -> torch.Tensor:
+        return weight + self.delta
+
+
+def _merge_qkv_lora(attn: nn.Module, args: tp.Any) -> None:
+    qkv: tp.Any = attn.qkv  # a peft LoraLayer
+    if qkv.disable_adapters or qkv.merged:
+        return
+    delta = sum(
+        qkv.get_delta_weight(name) for name in qkv.active_adapters if name in qkv.lora_A
+    )
+    if isinstance(delta, torch.Tensor):
+        nn.utils.parametrize.register_parametrization(
+            qkv.base_layer, "weight", _AddDelta(delta)
+        )
+
+
+def _unmerge_qkv_lora(attn: nn.Module, args: tp.Any, output: tp.Any) -> None:
+    qkv: tp.Any = attn.qkv
+    base = qkv.base_layer
+    if nn.utils.parametrize.is_parametrized(base, "weight"):
+        nn.utils.parametrize.remove_parametrizations(
+            base, "weight", leave_parametrized=False
+        )
+
+
+_MHA_FASTPATH_STATES: list[bool] = []
+
+
+def _disable_mha_fastpath(module: nn.Module, args: tp.Any) -> None:
+    _MHA_FASTPATH_STATES.append(torch.backends.mha.get_fastpath_enabled())
+    torch.backends.mha.set_fastpath_enabled(False)
+
+
+def _restore_mha_fastpath(module: nn.Module, args: tp.Any, output: tp.Any) -> None:
+    torch.backends.mha.set_fastpath_enabled(_MHA_FASTPATH_STATES.pop())
+
+
+def route_bypassed_qkv_lora(model: nn.Module) -> int:
+    """Make LoRA on ``qkv`` reach BEiT-style attention; return the modules patched.
+
+    BEiT-style attention (LaBraM, EEG-DINO) reads ``qkv.weight`` through
+    ``F.linear`` and never calls ``qkv``; each forward sees ``W + delta`` instead.
+    """
+    from peft.tuners.lora import Linear as LoraLinear
+
+    patched = 0
+    for attn in model.modules():
+        if isinstance(getattr(attn, "qkv", None), LoraLinear) and hasattr(attn, "q_bias"):
+            attn.register_forward_pre_hook(_merge_qkv_lora)
+            attn.register_forward_hook(_unmerge_qkv_lora, always_call=True)
+            patched += 1
+    return patched
+
+
 class IndexSelect(nn.Module):
     """Select specific indices along a dimension, squeezing if only one index is selected."""
 
@@ -487,6 +548,13 @@ class DownstreamWrapper(pydantic.BaseModel):
         ``["to_q", "to_k", "to_v", "to_out"]``), usually set per foundation
         model in its YAML.  Overridden by :attr:`lora_config.target_modules`,
         ignored when :attr:`lora_config` is None.  Default is None.
+    unfreeze_at_epoch : int | None, optional
+        If set, the parameters frozen by ``layers_to_freeze`` /
+        ``layers_to_unfreeze`` become trainable at the start of this epoch, i.e.
+        the head is first fitted on frozen features, then the whole model is
+        fine-tuned from it (LP-FT, Kumar et al. 2022).  Multi-GPU runs need
+        ``trainer_config.strategy="ddp_find_unused_parameters_true"``.
+        Default is None.
     """
 
     model_config = pydantic.ConfigDict(extra="forbid")
@@ -502,6 +570,7 @@ class DownstreamWrapper(pydantic.BaseModel):
     probe_batch_dim: int | tp.Literal["auto"] = "auto"
     lora_config: LoraConfig | None = None
     lora_target_modules: list[str] | None = None
+    unfreeze_at_epoch: pydantic.PositiveInt | None = None
 
     @property
     def n_adapter_target_channels(self) -> int | None:
@@ -531,6 +600,19 @@ class DownstreamWrapper(pydantic.BaseModel):
             raise ValueError(
                 "probe_batch_dim only applies when probe_layer is set; "
                 f"got probe_batch_dim={self.probe_batch_dim} with probe_layer=None."
+            )
+
+        if self.unfreeze_at_epoch is not None and (
+            self.layers_to_freeze is None and self.layers_to_unfreeze is None
+        ):
+            raise ValueError(
+                "unfreeze_at_epoch requires layers_to_freeze or layers_to_unfreeze, "
+                "otherwise nothing is frozen to begin with."
+            )
+        if self.unfreeze_at_epoch is not None and self.lora_config is not None:
+            raise ValueError(
+                "unfreeze_at_epoch and lora_config cannot be combined: unfreezing "
+                "would fully fine-tune the backbone under the adapters."
             )
 
         if self.probe_config == "attention" and self.aggregation is not None:
@@ -608,6 +690,7 @@ class DownstreamWrapper(pydantic.BaseModel):
             probe_config=self.probe_config,
             probe_layer=self.probe_layer,
             probe_batch_dim=probe_batch_dim,
+            unfreeze_at_epoch=self.unfreeze_at_epoch,
         )
 
         # must follow the freeze pattern and load_checkpoint (build_brain_model step 3)
@@ -628,6 +711,15 @@ class DownstreamWrapper(pydantic.BaseModel):
                 wrapper_model.wrapped_model,  # type: ignore[arg-type]
                 peft_cfg,
             )
+            # eval fast path skips the adapters
+            wrapper_model.wrapped_model.register_forward_pre_hook(_disable_mha_fastpath)
+            wrapper_model.wrapped_model.register_forward_hook(
+                _restore_mha_fastpath, always_call=True
+            )
+            if route_bypassed_qkv_lora(wrapper_model.wrapped_model) and (
+                self.lora_config.lora_dropout
+            ):
+                LOGGER.warning("lora_dropout is not applied to BEiT-style qkv adapters.")
 
         # Sanity check (wrapper handles preprocessing internally)
         wrapper_output = wrapper_model(**dummy_batch)
@@ -678,6 +770,11 @@ class DownstreamWrapperModel(nn.Module):
     model -> output key selection -> aggregation -> probe.
     """
 
+    def reset_state(self) -> None:
+        """Call the backbone's ``reset_state()``, when it has one."""
+        if hasattr(self.wrapped_model, "reset_state"):
+            tp.cast(tp.Callable[[], None], self.wrapped_model.reset_state)()
+
     def __init__(
         self,
         model: nn.Module,
@@ -694,9 +791,11 @@ class DownstreamWrapperModel(nn.Module):
         probe_config: Mlp | tp.Literal["linear", "attention"] | None = None,
         probe_layer: str | None = None,
         probe_batch_dim: int = 0,
+        unfreeze_at_epoch: int | None = None,
     ):
         super().__init__()
 
+        self.unfreeze_at_epoch = unfreeze_at_epoch
         self.preprocessor = preprocessor
         self.channel_adapter = channel_adapter
         self._adapter_needs_positions = adapter_needs_positions
@@ -749,6 +848,7 @@ class DownstreamWrapperModel(nn.Module):
         strict_matching: bool,
     ) -> None:
         """Freeze or unfreeze model parameters based on layer name patterns."""
+        trainable_before = [p for p in self.wrapped_model.parameters() if p.requires_grad]
         if layers_to_freeze is not None:
             for name, param in self.wrapped_model.named_parameters():
                 if strict_matching:
@@ -778,6 +878,13 @@ class DownstreamWrapperModel(nn.Module):
                 else:
                     requires_grad = any(pattern in name for pattern in layers_to_unfreeze)
                 param.requires_grad = requires_grad
+
+        self._pattern_frozen = [p for p in trainable_before if not p.requires_grad]
+
+    def set_pattern_frozen(self, frozen: bool) -> None:
+        """Freeze or unfreeze the parameters the freeze pattern froze, and only those."""
+        for param in self._pattern_frozen:
+            param.requires_grad = not frozen
 
     def _build_aggregation(
         self,

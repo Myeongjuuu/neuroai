@@ -6,8 +6,8 @@
 from __future__ import annotations
 
 import json
-from itertools import combinations
 import typing as tp
+from itertools import combinations
 
 import torch
 from torch import nn
@@ -113,7 +113,9 @@ class Llama32EEGModel(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if x.ndim != 3:
-            raise ValueError(f"Expected EEG (batch, channels, time), got {tuple(x.shape)}")
+            raise ValueError(
+                f"Expected EEG (batch, channels, time), got {tuple(x.shape)}"
+            )
         if x.shape[1] != self.eeg_projector[0].normalized_shape[0]:
             raise ValueError("EEG channel count differs from model build context")
         eeg = self.eeg_pool(x.float()).transpose(1, 2)
@@ -121,10 +123,10 @@ class Llama32EEGModel(nn.Module):
         text_embeds = self.llama.get_input_embeddings()(
             self.prompt_ids.unsqueeze(0).expand(x.shape[0], -1)
         )
-        inputs_embeds = torch.cat(
-            [eeg_embeds.to(text_embeds.dtype), text_embeds], dim=1
-        )
-        hidden = self.llama(inputs_embeds=inputs_embeds, use_cache=False).last_hidden_state
+        inputs_embeds = torch.cat([eeg_embeds.to(text_embeds.dtype), text_embeds], dim=1)
+        hidden = self.llama(
+            inputs_embeds=inputs_embeds, use_cache=False
+        ).last_hidden_state
         return self.output_head(hidden[:, -1].float())
 
 
@@ -298,7 +300,10 @@ class Llama32EEGGenerateModel(nn.Module):
         prefix_mask = torch.ones(prefix.shape[:2], dtype=torch.long, device=prefix.device)
         attention_mask = torch.cat([prefix_mask, response_mask], dim=1)
         labels = torch.cat(
-            [torch.full_like(prefix_mask, -100), tokens.masked_fill(~response_mask.bool(), -100)],
+            [
+                torch.full_like(prefix_mask, -100),
+                tokens.masked_fill(~response_mask.bool(), -100),
+            ],
             dim=1,
         )
         return self.llama(
@@ -324,13 +329,17 @@ class Llama32EEGGenerateModel(nn.Module):
 
         generated = self.llama.generate(
             inputs_embeds=prefix,
-            attention_mask=torch.ones(prefix.shape[:2], dtype=torch.long, device=prefix.device),
+            attention_mask=torch.ones(
+                prefix.shape[:2], dtype=torch.long, device=prefix.device
+            ),
             max_new_tokens=self.max_new_tokens,
             do_sample=False,
             pad_token_id=self.tokenizer.eos_token_id,
             eos_token_id=self.tokenizer.eos_token_id,
             use_cache=True,
-            prefix_allowed_tokens_fn=allowed_tokens if self.constrain_event_list else None,
+            prefix_allowed_tokens_fn=allowed_tokens
+            if self.constrain_event_list
+            else None,
         )
         decoded = self.tokenizer.batch_decode(generated, skip_special_tokens=True)
         self.last_generated_texts = decoded

@@ -5,6 +5,7 @@
 # LICENSE file in the root directory of this source tree.
 
 
+import copy
 import logging
 import typing as tp
 import warnings
@@ -28,15 +29,127 @@ from tqdm import tqdm
 
 from neuraltrain.metrics.utils import agg_per_group, agg_retrieval_preds
 
+from .modules import DownstreamWrapperModel
+
 if tp.TYPE_CHECKING:
     from neuraltrain.utils import StandardScaler
 
 LOGGER = logging.getLogger(__name__)
 
 
+class ResetPerStream(Callback):
+    """Reset the model's state at each new stream, on a fresh model copy in evaluation.
+
+    Streams are identified by ``batch.data["stream_id"]`` (see
+    ``Data.stream_by``). A stream starts at each batch whose set of streams
+    differs from the previous batch's, or that opens an epoch or evaluation
+    pass. With windows in timeline then time order, each stream's timelines
+    contiguous, and one window per batch (batch size 1, no shuffling), this is
+    exactly each new stream, seen forward in time. With larger or shuffled
+    batches it fires more often, never less: shuffled training batches almost
+    always start a new stream.
+
+    At each new stream, the model's optional ``reset_state()`` is called.
+    During validation and test, it is called on a fresh copy of the model as it
+    was when evaluation began, so nothing the model changes while predicting
+    (weights, buffers, attributes) carries over to the next stream. The
+    original model is restored when evaluation ends, so training and
+    checkpoints never see the copies. A model that carries state across
+    training batches must detach it from the autograd graph.
+    """
+
+    def __init__(self) -> None:
+        self.original: nn.Module | None = None
+        # stage ("train" or "eval") -> (dataloader_idx, stream ids) of its last batch
+        self.previous: dict[str, tuple[int, frozenset[int]]] = {}
+
+    @staticmethod
+    def _reset_state(model: nn.Module) -> None:
+        reset_state = getattr(model, "reset_state", None)
+        if reset_state is not None:
+            reset_state()
+
+    def _is_new_stream(
+        self, stage: str, batch, batch_idx: int, dataloader_idx: int
+    ) -> bool:
+        key = (dataloader_idx, frozenset(batch.data["stream_id"].flatten().tolist()))
+        is_new = batch_idx == 0 or key != self.previous.get(stage)
+        self.previous[stage] = key
+        return is_new
+
+    def on_train_batch_start(self, trainer, pl_module, batch, batch_idx):
+        if self._is_new_stream("train", batch, batch_idx, 0):
+            self._reset_state(pl_module.model)
+
+    def on_test_start(self, trainer, pl_module):
+        self.original = pl_module.model
+
+    def on_validation_start(self, trainer, pl_module):
+        self.on_test_start(trainer, pl_module)
+
+    def on_test_batch_start(self, trainer, pl_module, batch, batch_idx, dataloader_idx=0):
+        if self._is_new_stream("eval", batch, batch_idx, dataloader_idx):
+            pl_module.model = copy.deepcopy(self.original)
+            self._reset_state(pl_module.model)
+
+    def on_validation_batch_start(
+        self, trainer, pl_module, batch, batch_idx, dataloader_idx=0
+    ):
+        self.on_test_batch_start(trainer, pl_module, batch, batch_idx, dataloader_idx)
+
+    def on_test_end(self, trainer, pl_module):
+        pl_module.model = self.original
+        self.original = None
+
+    def on_validation_end(self, trainer, pl_module):
+        self.on_test_end(trainer, pl_module)
+
+
 def _set_plot_theme() -> None:
     """Apply the plotting theme used by neuralbench callbacks."""
     sns.set_theme(context="paper", style="white")
+
+
+class UnfreezeAtEpoch(Callback):
+    """Keep the pattern-frozen parameters of *model* frozen until its ``unfreeze_at_epoch``.
+
+    The parameters are trainable while the strategy sets up the model, so that
+    DDP registers them for gradient synchronisation, and frozen from the start
+    of fitting.  The optimizer holds them throughout, so they start updating as
+    soon as they receive gradients.
+    """
+
+    def __init__(self, model: DownstreamWrapperModel) -> None:
+        assert model.unfreeze_at_epoch is not None
+        self.model = model
+        self.epoch = model.unfreeze_at_epoch
+
+    def setup(
+        self, trainer: pl.Trainer, pl_module: pl.LightningModule, stage: str
+    ) -> None:
+        if stage == "fit":
+            self.model.set_pattern_frozen(False)
+
+    def on_fit_start(self, trainer: pl.Trainer, pl_module: pl.LightningModule) -> None:
+        if trainer.max_epochs is not None and self.epoch >= trainer.max_epochs:
+            LOGGER.warning(
+                "unfreeze_at_epoch=%d is past max_epochs=%d: the backbone stays "
+                "frozen for the whole run.",
+                self.epoch,
+                trainer.max_epochs,
+            )
+        self.model.set_pattern_frozen(True)
+
+    def on_train_epoch_start(
+        self, trainer: pl.Trainer, pl_module: pl.LightningModule
+    ) -> None:
+        if trainer.current_epoch != self.epoch:
+            return
+        self.model.set_pattern_frozen(False)
+        n_trainable = sum(p.numel() for p in pl_module.parameters() if p.requires_grad)
+        LOGGER.info(
+            "Epoch %d: unfroze backbone (%d trainable params)", self.epoch, n_trainable
+        )
 
 
 class TestFullRetrievalMetrics(Callback):

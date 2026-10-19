@@ -29,6 +29,7 @@ from .registry import (
     ALL_TASKS,
     DEFAULTS_DIR,
     _resolve_task_dir,
+    load_default_config,
     load_yaml_config,
 )
 
@@ -49,7 +50,7 @@ def test_prepare_task_configs(dataset: str | None) -> None:
     schalk2004bci2000 uses =replace= which wipes the study dict; _restore_default_source
     must re-inject path and infra from the defaults.
     """
-    config = ConfDict(load_yaml_config(DEFAULTS_DIR / "config.yaml"))
+    config = ConfDict(load_default_config("eeg"))
     grid = ConfDict(load_yaml_config(DEFAULTS_DIR / "grid.yaml"))
     datasets: list[str | None] | None = [dataset] if dataset is not None else None
     configs = prepare_task_configs(
@@ -137,7 +138,7 @@ def _capture_assembled_experiments(
     captured: dict[str, tp.Any] = {}
 
     class _FakeAggregator:
-        def __init__(self, experiments: list[ConfDict], debug: bool) -> None:
+        def __init__(self, experiments: list[ConfDict], **_: tp.Any) -> None:
             captured["experiments"] = experiments
 
         def prepare(self) -> None:

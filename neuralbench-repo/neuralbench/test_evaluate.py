@@ -101,6 +101,8 @@ def test_assembles_external_model_configs(
         assert flat["brain_model_name"] == "my-fm"
         assert flat["brain_model_config.name"] == "ExternalModel"
         assert flat["brain_model_config.pickle_path"].endswith(".pt")
+        # The dataset variant, not motor_imagery's base Stieger2021Continuous.
+        assert flat["data.study.source.name"] == "Schalk2004Bci2000"
         # Overrides beat the task config they are layered onto.
         assert flat["data.neuro.frequency"] == 200.0
         assert flat["lightning_optimizer_config.optimizer.lr"] == 1e-4
@@ -108,6 +110,19 @@ def test_assembles_external_model_configs(
         # wrapper for one model to span tasks of differing class counts.
         assert flat["downstream_model_wrapper.aggregation"] == "mean"
         assert flat["downstream_model_wrapper.probe_config"] == "linear"
+
+
+def test_runs_every_space_a_dataset_provides(
+    monkeypatch: pytest.MonkeyPatch, patch_config: Callable[..., None], tmp_path: Path
+) -> None:
+    patch_config(SLURM_PARTITION="dummy", CACHE_DIR=str(tmp_path))
+    phases: list[list[ConfDict]] = []
+    _stub_aggregator(monkeypatch, phases)
+    evaluate_model(
+        AdaptiveFm(), "fmri", "image", space="all", download=False, prepare=False
+    )
+    spaces = {c["space_name"] for c in phases[0]}
+    assert spaces == {"mni", "mni2fsaverage4", "mni2fsaverage5", "mni2fsaverage6"}
 
 
 def test_runs_in_process_by_default(
